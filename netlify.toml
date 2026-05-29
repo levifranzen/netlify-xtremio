@@ -1,0 +1,11 @@
+# `netlify.toml`
+
+```toml
+[build]
+  functions = "netlify/functions"
+
+[[redirects]]
+  from = "/manifest.json"
+  to = "/.netlify/functions/manifest"
+  status = 200
+```
