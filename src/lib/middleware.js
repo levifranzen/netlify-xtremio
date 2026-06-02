@@ -19,8 +19,13 @@ const { cache } = require("./cache");
 const { XtreamClient } = require("./xtream");
 
 // Extract :token segment from paths like /:token/manifest.json
+// Token format is base64url.base64url (contains dots) so we match
+// everything between the first and second path segments greedily.
 function extractToken(path) {
-  const match = path.match(/\/([A-Za-z0-9\-_.~]+)\/(manifest|catalog|stream|meta|configure)/);
+  // Strip function prefix if present: /.netlify/functions/manifest/TOKEN/...
+  const clean = path.replace(/^\/.netlify\/functions\/[^/]+/, "");
+  // clean is now /TOKEN/manifest.json or /TOKEN/catalog/...
+  const match = clean.match(/^\/([^/]+)\//);
   return match ? match[1] : null;
 }
 
