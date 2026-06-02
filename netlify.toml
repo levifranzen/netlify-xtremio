@@ -1,11 +1,70 @@
-# `netlify.toml`
-
-```toml
 [build]
+  publish = "public"
   functions = "netlify/functions"
 
+[functions]
+  node_bundler = "esbuild"
+  included_files = ["src/**"]
+
+# Timeout (seconds) — upgrade to Netlify Pro for 26s
+[functions."manifest"]
+  timeout = 26
+
+[functions."catalog"]
+  timeout = 26
+
+[functions."meta"]
+  timeout = 26
+
+[functions."stream"]
+  timeout = 26
+
+[functions."configure"]
+  timeout = 26
+
+[functions."admin"]
+  timeout = 26
+
+# ── Redirects ──────────────────────────────────────────────────────────────────
+
+# Stremio-style pretty URLs → Netlify Functions
+# Stremio will call: /manifest/:token/manifest.json
 [[redirects]]
-  from = "/manifest.json"
-  to = "/.netlify/functions/manifest"
+  from = "/manifest/:token/manifest.json"
+  to   = "/.netlify/functions/manifest/:token/manifest.json"
   status = 200
-```
+
+[[redirects]]
+  from = "/catalog/:token/*"
+  to   = "/.netlify/functions/catalog/:token/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/meta/:token/*"
+  to   = "/.netlify/functions/meta/:token/:splat"
+  status = 200
+
+[[redirects]]
+  from = "/stream/:token/*"
+  to   = "/.netlify/functions/stream/:token/:splat"
+  status = 200
+
+# Static pages
+[[redirects]]
+  from = "/"
+  to   = "/configure.html"
+  status = 200
+
+[[redirects]]
+  from = "/admin"
+  to   = "/admin.html"
+  status = 200
+
+# ── Headers ───────────────────────────────────────────────────────────────────
+
+[[headers]]
+  for = "/.netlify/functions/*"
+  [headers.values]
+    Access-Control-Allow-Origin  = "*"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type, x-admin-secret"

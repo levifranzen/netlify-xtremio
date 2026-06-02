@@ -1,0 +1,15 @@
+{
+  "name": "xtremio-saas",
+  "version": "1.0.0",
+  "description": "Xtremio — multi-tenant Stremio IPTV addon SaaS on Netlify",
+  "scripts": {
+    "dev": "netlify dev",
+    "deploy": "netlify deploy --prod"
+  },
+  "dependencies": {
+    "node-fetch": "^2.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
