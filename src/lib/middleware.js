@@ -60,6 +60,10 @@ function withAuth(handler) {
     try {
       payload = verifyToken(rawToken);
     } catch (err) {
+      // DEBUG — remove after fix
+      console.error("[auth] verify failed:", err.message);
+      console.error("[auth] TOKEN_SECRET set:", !!process.env.TOKEN_SECRET, "length:", process.env.TOKEN_SECRET?.length ?? 0);
+      console.error("[auth] token prefix:", rawToken?.slice(0, 40));
       return jsonResponse(401, { error: "Invalid or tampered token" });
     }
 
