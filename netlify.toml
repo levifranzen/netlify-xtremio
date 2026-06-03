@@ -6,17 +6,7 @@
   node_bundler = "esbuild"
   included_files = ["src/**"]
 
-# Timeout (seconds) — upgrade to Netlify Pro for 26s
-[functions."manifest"]
-  timeout = 26
-
-[functions."catalog"]
-  timeout = 26
-
-[functions."meta"]
-  timeout = 26
-
-[functions."stream"]
+[functions."addon"]
   timeout = 26
 
 [functions."configure"]
@@ -25,29 +15,7 @@
 [functions."admin"]
   timeout = 26
 
-# ── Redirects ──────────────────────────────────────────────────────────────────
-
-# Stremio-style pretty URLs → Netlify Functions
-# Stremio will call: /manifest/:token/manifest.json
-[[redirects]]
-  from = "/manifest/:token/manifest.json"
-  to   = "/.netlify/functions/manifest/:token/manifest.json"
-  status = 200
-
-[[redirects]]
-  from = "/catalog/:token/*"
-  to   = "/.netlify/functions/catalog/:token/:splat"
-  status = 200
-
-[[redirects]]
-  from = "/meta/:token/*"
-  to   = "/.netlify/functions/meta/:token/:splat"
-  status = 200
-
-[[redirects]]
-  from = "/stream/:token/*"
-  to   = "/.netlify/functions/stream/:token/:splat"
-  status = 200
+# ── Redirects ─────────────────────────────────────────────────────────────────
 
 # Static pages
 [[redirects]]
