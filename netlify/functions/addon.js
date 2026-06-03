@@ -230,6 +230,37 @@ async function handleMeta(event, { xtream }) {
   }
 }
 
+// ── Stream match helpers ──────────────────────────────────────────────────────
+
+// Tries multiple strategies to match a TMDB entry to a provider item.
+// Order: exact tmdb_id → normalized name exact → normalized name includes
+function findBestMatch(items, tmdbId, ...names) {
+  const normNames = names.filter(Boolean).map(normalizeName);
+
+  // 1. tmdb_id exact match (when provider populates it correctly)
+  if (tmdbId) {
+    const m = items.find(i => i.tmdb_id && String(i.tmdb_id) === String(tmdbId));
+    if (m) return m;
+  }
+
+  // 2. Normalized name exact match
+  for (const norm of normNames) {
+    const m = items.find(i => normalizeName(i.name) === norm || normalizeName(i.title) === norm);
+    if (m) return m;
+  }
+
+  // 3. Normalized name includes (handles "(2024)" suffixes, etc.)
+  for (const norm of normNames) {
+    const m = items.find(i => {
+      const iNorm = normalizeName(i.name || i.title);
+      return iNorm.includes(norm) || norm.includes(iNorm);
+    });
+    if (m) return m;
+  }
+
+  return null;
+}
+
 // ── Stream ────────────────────────────────────────────────────────────────────
 
 async function handleStream(event, { xtream, keyHash }) {
@@ -246,15 +277,12 @@ async function handleStream(event, { xtream, keyHash }) {
     if (ttSeries) {
       const [, imdbId, season, episode] = ttSeries;
 
-      // Get TMDB info to find series name
       const tmdb = await getSeriesByImdbId(imdbId);
       if (tmdb) {
-        // Search provider catalog (served from Redis cache — not a live API call)
         const allSeries = await xtream.getSeries();
-        const match = allSeries.find(s =>
-          String(s.tmdb_id) === String(tmdb.id) ||
-          normalizeName(s.name) === normalizeName(tmdb.name)
-        );
+        const match = findBestMatch(allSeries, tmdb.id, tmdb.name, tmdb.original_name);
+        console.log(`[stream] series lookup: imdb=${imdbId} tmdb_id=${tmdb.id} name="${tmdb.name}" match=${match?.series_id || "NONE"}`);
+
         if (match) {
           const info = await xtream.getSeriesInfo(match.series_id);
           const eps  = info?.episodes?.[String(season)] || [];
@@ -264,6 +292,8 @@ async function handleStream(event, { xtream, keyHash }) {
               { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
               { url: xtream.getEpisodeStreamUrl(ep.id, "mp4"), title: "MP4" },
             ];
+          } else {
+            console.log(`[stream] episode not found: season=${season} episode=${episode}, available seasons:`, Object.keys(info?.episodes || {}));
           }
         }
       }
@@ -275,10 +305,8 @@ async function handleStream(event, { xtream, keyHash }) {
       const tmdb = await getMovieByImdbId(id);
       if (tmdb) {
         const allMovies = await xtream.getMovies();
-        const match = allMovies.find(m =>
-          String(m.tmdb_id) === String(tmdb.id) ||
-          normalizeName(m.name) === normalizeName(tmdb.title)
-        );
+        const match = findBestMatch(allMovies, tmdb.id, tmdb.title, tmdb.original_title);
+        console.log(`[stream] movie lookup: imdb=${id} tmdb_id=${tmdb.id} name="${tmdb.title}" match=${match?.stream_id || "NONE"}`);
         if (match) {
           streams = [
             { url: xtream.getMovieStreamUrl(match.stream_id, "mp4"), title: "MP4" },
