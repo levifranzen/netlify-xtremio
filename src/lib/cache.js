@@ -101,8 +101,7 @@ const keys = {
   seriesInfo:     (ph, id) => `provider:${ph}:series:${id}`,
   idxMovies:      (ph)     => `provider:${ph}:idx:movies`,
   idxSeries:      (ph)     => `provider:${ph}:idx:series`,
-  idxStatus:      (ph)     => `provider:${ph}:idx:status`,
-  tmdbMovie:      (id)     => `tmdb:movie:${id}`,
+  idxStatus:      (ph)     => `provider:${ph}:idx:status`,  tmdbMovie:      (id)     => `tmdb:movie:${id}`,
   tmdbSeries:     (id)     => `tmdb:series:${id}`,
   apiKey:         (hash)   => `apikey:${hash}`,
   apiKeyStats:    (hash)   => `apikey:${hash}:stats`,
@@ -122,13 +121,15 @@ const cache = {
   async getSeriesInfo(ph, id)    { return get(keys.seriesInfo(ph, id)); },
   async setSeriesInfo(ph, id, v) { return set(keys.seriesInfo(ph, id), v, TTL.SERIES_INFO); },
 
-  // Provider index (JSON blobs)
-  async getIdxMovies(ph)         { return get(keys.idxMovies(ph)); },
-  async setIdxMovies(ph, v)      { return set(keys.idxMovies(ph), v, TTL.CATALOG); },
-  async getIdxSeries(ph)         { return get(keys.idxSeries(ph)); },
-  async setIdxSeries(ph, v)      { return set(keys.idxSeries(ph), v, TTL.CATALOG); },
-  async getIdxStatus(ph)         { return get(keys.idxStatus(ph)); },
-  async setIdxStatus(ph, v)      { return set(keys.idxStatus(ph), v, TTL.CATALOG); },
+  // Provider index (Redis HASH — field per normalized title)
+  idxMoviesKey:  (ph)          => keys.idxMovies(ph),
+  idxSeriesKey:  (ph)          => keys.idxSeries(ph),
+  async getIdxMovie(ph, field) { return hget(keys.idxMovies(ph), field); },
+  async getIdxSeries(ph, field){ return hget(keys.idxSeries(ph), field); },
+  async lenIdxMovies(ph)       { return hlen(keys.idxMovies(ph)); },
+  async lenIdxSeries(ph)       { return hlen(keys.idxSeries(ph)); },
+  async getIdxStatus(ph)       { return get(keys.idxStatus(ph)); },
+  async setIdxStatus(ph, v)    { return set(keys.idxStatus(ph), v, TTL.CATALOG); },
 
   // TMDB metadata
   async getTmdbMovie(id)         { return get(keys.tmdbMovie(id)); },
@@ -169,4 +170,59 @@ const cache = {
   },
 };
 
-module.exports = { cache, TTL, keys, get, set, del, cmd, pipeline };
+module.exports = { cache, TTL, keys, get, set, del, cmd, pipeline, hset, hget, hlen, hdel, hsetBatch };
+
+// ─── HASH helpers (for provider index) ───────────────────────────────────────
+
+/**
+ * Set a single field in a Redis HASH, serializing value as JSON.
+ */
+async function hset(key, field, value) {
+  return cmd("HSET", key, field, JSON.stringify(value));
+}
+
+/**
+ * Get a single field from a Redis HASH, deserializing JSON automatically.
+ * Returns null if key or field does not exist.
+ */
+async function hget(key, field) {
+  const val = await cmd("HGET", key, field);
+  if (val === null || val === undefined) return null;
+  try { return JSON.parse(val); } catch { return val; }
+}
+
+/**
+ * Get the number of fields in a HASH.
+ */
+async function hlen(key) {
+  return cmd("HLEN", key);
+}
+
+/**
+ * Delete one or more fields from a HASH.
+ */
+async function hdel(key, ...fields) {
+  return cmd("HDEL", key, ...fields);
+}
+
+/**
+ * Write a { field: value } map to a Redis HASH in batches via pipeline.
+ * Each value is serialized as JSON. Sends batchSize HSET commands per
+ * pipeline call to avoid oversized payloads (50 is safe for ~200 byte values).
+ *
+ * @param {string} key       Redis HASH key
+ * @param {object} map       Plain object { field: value }
+ * @param {number} batchSize Commands per pipeline call (default 50)
+ */
+async function hsetBatch(key, map, batchSize = 50) {
+  const entries = Object.entries(map);
+  if (entries.length === 0) return;
+
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const slice = entries.slice(i, i + batchSize);
+    const commands = slice.map(([field, value]) => [
+      "HSET", key, field, JSON.stringify(value),
+    ]);
+    await pipeline(...commands);
+  }
+}
