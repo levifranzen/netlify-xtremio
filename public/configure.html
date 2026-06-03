@@ -294,49 +294,17 @@
 
       const { token, manifestUrl, stremioUrl, userInfo } = data;
 
-      // 2. Fire-and-forget — start provider indexing in background
-      fetch(LOAD_API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ token }),
-      }).catch(() => {});
-
-      // 3. Show result block immediately — install button disabled until indexed
-      document.getElementById('manifestUrl').textContent = manifestUrl;
-      document.getElementById('installBtn').href = stremioUrl;
-      document.getElementById('installBtn').style.opacity = '0.4';
-      document.getElementById('installBtn').style.pointerEvents = 'none';
-      resultBlock.style.display = 'block';
-
+      // 2. Show result immediately
       const expiry = userInfo?.expirationDate
         ? new Date(userInfo.expirationDate * 1000).toLocaleDateString()
         : 'N/A';
-      showStatus('success',
-        `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry} · Indexing provider…`
-      );
 
-      // 4. Poll index status
-      clearInterval(pollTimer);
-      pollTimer = setInterval(async () => {
-        try {
-          const st = await fetch(`${ADDON_BASE}/${token}/index-status`).then(r => r.json());
-          if (st.state === 'done') {
-            clearInterval(pollTimer);
-            document.getElementById('installBtn').style.opacity = '';
-            document.getElementById('installBtn').style.pointerEvents = '';
-            showStatus('success',
-              `Ready! ${st.movies?.toLocaleString() || 0} movies · ${st.series?.toLocaleString() || 0} series indexed. ` +
-              `Status: ${userInfo?.status || 'active'} · Expires: ${expiry}`
-            );
-          } else if (st.state === 'error') {
-            clearInterval(pollTimer);
-            // Still allow install — streams will fallback to list scan
-            document.getElementById('installBtn').style.opacity = '';
-            document.getElementById('installBtn').style.pointerEvents = '';
-            showStatus('success', `Connected (index warning: ${st.error}). You can still install.`);
-          }
-        } catch { /* ignore poll errors */ }
-      }, 4000);
+      document.getElementById('manifestUrl').textContent = manifestUrl;
+      document.getElementById('installBtn').href = stremioUrl;
+      resultBlock.style.display = 'block';
+      showStatus('success',
+        `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry}`
+      );
 
     } catch (err) {
       showStatus('error', 'Network error — check your connection.');

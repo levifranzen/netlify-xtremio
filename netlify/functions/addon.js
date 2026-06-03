@@ -1,7 +1,8 @@
 /**
- * addon.js — /.netlify/functions/addon/:token/{manifest,catalog,meta,stream,index-status}/...
+ * addon.js — /.netlify/functions/addon/:token/{manifest,catalog,meta,stream}/...
  *
- * Single entry point for all Stremio addon resources.
+ * Single Netlify Function handling all Stremio addon resources.
+ * Provider index removed for MVP — stream lookup uses cached catalog list.
  */
 
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
@@ -11,28 +12,9 @@ const { getMovieByImdbId, getSeriesByImdbId, movieToMeta, seriesToMeta } = requi
 
 const PAGE_SIZE = 100;
 
-// ── Index lookup (O(1) via Redis HGET) ───────────────────────────────────────
-
-async function idxGet(key, field) {
-  const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
-  const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
-  if (!UPSTASH_URL || !UPSTASH_TOKEN) return null;
-  try {
-    const res = await fetch(
-      `${UPSTASH_URL}/${["HGET", key, field].map(encodeURIComponent).join("/")}`,
-      { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
-    );
-    if (!res.ok) return null;
-    const { result } = await res.json();
-    return result || null;
-  } catch { return null; }
-}
-
 function normalizeName(name) {
-  return (name || "").toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "").trim();
 }
-
-// ── Shared helpers ────────────────────────────────────────────────────────────
 
 function json(statusCode, body, extra = {}) {
   return {
@@ -42,7 +24,7 @@ function json(statusCode, body, extra = {}) {
   };
 }
 
-// ── Token auth ────────────────────────────────────────────────────────────────
+// ── Auth ──────────────────────────────────────────────────────────────────────
 
 async function authenticate(rawToken) {
   let payload;
@@ -58,12 +40,12 @@ async function authenticate(rawToken) {
   ]);
 
   if (!keyData || keyData.revoked || blocked) return null;
-
   cache.incrStat(keyHash, "requests").catch(() => {});
+
   return { payload, keyHash, ph, xtream: new XtreamClient(payload.serverUrl, payload.username, payload.password) };
 }
 
-// ── Parse path ────────────────────────────────────────────────────────────────
+// ── Path parsing ──────────────────────────────────────────────────────────────
 
 function parsePath(path) {
   const stripped = path.replace(/^\/.netlify\/functions\/addon\/?/, "");
@@ -71,8 +53,6 @@ function parsePath(path) {
   return {
     token:    parts[0] || null,
     resource: parts[1] || null,
-    type:     parts[2] || null,
-    id:       (parts[3] || "").replace(/\.json$/, ""),
   };
 }
 
@@ -80,10 +60,10 @@ function parsePath(path) {
 
 function handleManifest(event, payload) {
   const host = `https://${event.headers.host}`;
-  const { serverUrl } = payload;
+  const { token } = parsePath(event.path);
 
-  return json(200, {
-    id: `com.xtremio.saas.${Buffer.from(serverUrl).toString("base64url").slice(0, 12)}`,
+  const manifest = {
+    id: `com.xtremio.saas.${Buffer.from(payload.serverUrl).toString("base64url").slice(0, 12)}`,
     version: "1.0.0",
     name: "Xtremio",
     description: "Your IPTV provider via Xtream Codes, powered by Xtremio SaaS",
@@ -97,7 +77,9 @@ function handleManifest(event, payload) {
       { type: "tv",     id: "xtremio_live",   name: "IPTV Live TV", extra: [{ name: "genre" }] },
     ],
     behaviorHints: { adult: false, p2p: false },
-  }, { "Cache-Control": "public, max-age=3600" });
+  };
+
+  return json(200, manifest, { "Cache-Control": "public, max-age=3600" });
 }
 
 // ── Catalog ───────────────────────────────────────────────────────────────────
@@ -106,11 +88,17 @@ async function handleCatalog(event, { xtream }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/catalog\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
+
+  // Extra params: genre=Action or search=batman encoded in last segment
   const extraStr = (parts[2] || parts[1] || "").replace(/\.json$/, "");
   const extra = {};
-  extraStr.split("&").forEach(p => { const [k,v] = p.split("="); if (k&&v) extra[k] = decodeURIComponent(v); });
-  const skip = parseInt(extra.skip || "0");
-  const genre = extra.genre || null;
+  extraStr.split("&").forEach(p => {
+    const [k, v] = p.split("=");
+    if (k && v !== undefined) extra[k] = decodeURIComponent(v);
+  });
+
+  const skip   = parseInt(extra.skip || "0");
+  const genre  = extra.genre || null;
   const search = extra.search ? extra.search.toLowerCase() : null;
 
   try {
@@ -155,8 +143,8 @@ async function handleCatalog(event, { xtream }) {
       }
       if (search) items = items.filter(s => s.name?.toLowerCase().includes(search));
       metas = items.slice(skip, skip + PAGE_SIZE).map(s => ({
-        id: `xtream:live:${s.stream_id}`, type: "tv",
-        name: s.name, poster: s.stream_icon || null,
+        id: `xtream:live:${s.stream_id}`,
+        type: "tv", name: s.name, poster: s.stream_icon || null,
       }));
     }
 
@@ -173,9 +161,10 @@ async function handleMeta(event, { xtream }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/meta\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
-  const id = (parts[1] || "").replace(/\.json$/, "");
+  const id   = (parts[1] || "").replace(/\.json$/, "");
 
   try {
+    // IMDb IDs — enrich via TMDB
     if (id.startsWith("tt")) {
       if (type === "movie") {
         const tmdb = await getMovieByImdbId(id);
@@ -193,8 +182,10 @@ async function handleMeta(event, { xtream }) {
       const info = await xtream.getMovieInfo(itemId);
       const m = info?.info || {};
       return json(200, { meta: {
-        id, type: "movie", name: m.name || "Unknown",
-        poster: m.movie_image || null, description: m.plot || null,
+        id, type: "movie",
+        name: m.name || "Unknown",
+        poster: m.movie_image || null,
+        description: m.plot || null,
         releaseInfo: m.releasedate?.split("-")[0] || null,
         imdbRating: m.rating_5based ? String((m.rating_5based * 2).toFixed(1)) : null,
         genres: m.genre ? m.genre.split(",").map(g => g.trim()) : [],
@@ -210,14 +201,17 @@ async function handleMeta(event, { xtream }) {
           videos.push({
             id: `xtream:ep:${ep.id}`,
             title: ep.title || `Episode ${ep.episode_num}`,
-            season: parseInt(season), episode: parseInt(ep.episode_num),
+            season: parseInt(season),
+            episode: parseInt(ep.episode_num),
             released: ep.added ? new Date(parseInt(ep.added) * 1000).toISOString() : null,
           });
         }
       }
       return json(200, { meta: {
-        id, type: "series", name: s.name || "Unknown",
-        poster: s.cover || null, description: s.plot || null,
+        id, type: "series",
+        name: s.name || "Unknown",
+        poster: s.cover || null,
+        description: s.plot || null,
         releaseInfo: s.releaseDate?.split("-")[0] || null,
         videos: videos.sort((a, b) => a.season - b.season || a.episode - b.episode),
       }});
@@ -238,11 +232,11 @@ async function handleMeta(event, { xtream }) {
 
 // ── Stream ────────────────────────────────────────────────────────────────────
 
-async function handleStream(event, { xtream, keyHash, ph }) {
+async function handleStream(event, { xtream, keyHash }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/stream\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
-  const id = (parts[1] || "").replace(/\.json$/, "");
+  const id   = (parts[1] || "").replace(/\.json$/, "");
 
   try {
     let streams = [];
@@ -251,67 +245,51 @@ async function handleStream(event, { xtream, keyHash, ph }) {
     const ttSeries = id.match(/^(tt\d+):(\d+):(\d+)$/);
     if (ttSeries) {
       const [, imdbId, season, episode] = ttSeries;
-      const tmdbId = imdbId.replace("tt", "");
 
-      // 1. Index lookup O(1)
-      let seriesId = await idxGet(`provider:${ph}:idx:series`, tmdbId);
-
-      // 2. Try alternate tmdb: prefix key
-      if (!seriesId) seriesId = await idxGet(`provider:${ph}:idx:series`, `tmdb:${tmdbId}`);
-
-      // 3. Fallback: TMDB name → normalized name in index
-      if (!seriesId) {
-        const tmdb = await getSeriesByImdbId(imdbId);
-        if (tmdb) {
-          seriesId = await idxGet(`provider:${ph}:idx:series`, String(tmdb.id));
-          if (!seriesId) seriesId = await idxGet(`provider:${ph}:idx:series`, normalizeName(tmdb.name));
-          // Last resort: full list scan
-          if (!seriesId) {
-            const all = await xtream.getSeries();
-            const match = all.find(s => s.tmdb_id == tmdb.id || normalizeName(s.name) === normalizeName(tmdb.name));
-            if (match) seriesId = String(match.series_id);
+      // Get TMDB info to find series name
+      const tmdb = await getSeriesByImdbId(imdbId);
+      if (tmdb) {
+        // Search provider catalog (served from Redis cache — not a live API call)
+        const allSeries = await xtream.getSeries();
+        const match = allSeries.find(s =>
+          String(s.tmdb_id) === String(tmdb.id) ||
+          normalizeName(s.name) === normalizeName(tmdb.name)
+        );
+        if (match) {
+          const info = await xtream.getSeriesInfo(match.series_id);
+          const eps  = info?.episodes?.[String(season)] || [];
+          const ep   = eps.find(e => String(e.episode_num) === String(episode));
+          if (ep) {
+            streams = [
+              { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
+              { url: xtream.getEpisodeStreamUrl(ep.id, "mp4"), title: "MP4" },
+            ];
           }
-        }
-      }
-
-      if (seriesId) {
-        const info = await xtream.getSeriesInfo(seriesId);
-        const eps = info?.episodes?.[String(season)] || [];
-        const ep = eps.find(e => String(e.episode_num) === String(episode));
-        if (ep) {
-          streams = [
-            { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
-            { url: xtream.getEpisodeStreamUrl(ep.id, "mp4"), title: "MP4" },
-          ];
         }
       }
       cache.incrStat(keyHash, "streams_series").catch(() => {});
     }
 
-    // tt{imdbId} movie
+    // tt{imdbId} — movie via IMDb
     else if (id.startsWith("tt") && type === "movie") {
-      const tmdbId = id.replace("tt", "");
-
-      // 1. Index lookup O(1)
-      let streamId = await idxGet(`provider:${ph}:idx:movies`, tmdbId);
-
-      // 2. Fallback: list scan
-      if (!streamId) {
-        const movies = await xtream.getMovies();
-        const match = movies.find(m => String(m.tmdb_id) === tmdbId);
-        if (match) streamId = String(match.stream_id);
-      }
-
-      if (streamId) {
-        streams = [
-          { url: xtream.getMovieStreamUrl(streamId, "mp4"), title: "MP4" },
-          { url: xtream.getMovieStreamUrl(streamId, "mkv"), title: "MKV" },
-        ];
+      const tmdb = await getMovieByImdbId(id);
+      if (tmdb) {
+        const allMovies = await xtream.getMovies();
+        const match = allMovies.find(m =>
+          String(m.tmdb_id) === String(tmdb.id) ||
+          normalizeName(m.name) === normalizeName(tmdb.title)
+        );
+        if (match) {
+          streams = [
+            { url: xtream.getMovieStreamUrl(match.stream_id, "mp4"), title: "MP4" },
+            { url: xtream.getMovieStreamUrl(match.stream_id, "mkv"), title: "MKV" },
+          ];
+        }
       }
       cache.incrStat(keyHash, "streams_movie").catch(() => {});
     }
 
-    // xtream: native IDs
+    // xtream: native IDs — direct, no lookup needed
     else {
       const [, itemType, itemId] = id.split(":");
       if (itemType === "movie") {
@@ -335,20 +313,11 @@ async function handleStream(event, { xtream, keyHash, ph }) {
       }
     }
 
-    if (streams.length === 0) return json(200, { streams: [] });
     return json(200, { streams }, { "Cache-Control": "public, max-age=300" });
-
   } catch (err) {
     console.error("[stream]", err.message);
     return json(500, { error: err.message });
   }
-}
-
-// ── Index status ──────────────────────────────────────────────────────────────
-
-async function handleIndexStatus(event, { ph }) {
-  const status = await get(`provider:${ph}:idx:status`).catch(() => null);
-  return json(200, status || { state: "not_started" });
 }
 
 // ── Main handler ──────────────────────────────────────────────────────────────
@@ -365,11 +334,10 @@ exports.handler = async (event) => {
   if (!auth) return json(401, { error: "Invalid token or revoked key" });
 
   switch (resource) {
-    case "manifest":      return handleManifest(event, auth.payload);
-    case "catalog":       return handleCatalog(event, auth);
-    case "meta":          return handleMeta(event, auth);
-    case "stream":        return handleStream(event, auth);
-    case "index-status":  return handleIndexStatus(event, auth);
-    default:              return json(404, { error: `Unknown resource: ${resource}` });
+    case "manifest": return handleManifest(event, auth.payload);
+    case "catalog":  return handleCatalog(event, auth);
+    case "meta":     return handleMeta(event, auth);
+    case "stream":   return handleStream(event, auth);
+    default:         return json(404, { error: `Unknown resource: ${resource}` });
   }
 };
