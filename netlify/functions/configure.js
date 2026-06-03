@@ -95,8 +95,8 @@ exports.handler = async (event) => {
 
   // Build Stremio install URL
   const host = `https://${event.headers.host}`;
-  const manifestUrl = `${host}/.netlify/functions/manifest/${token}/manifest.json`;
-  const stremioUrl = `stremio://${host.replace("https://", "")}/.netlify/functions/manifest/${token}/manifest.json`;
+  const manifestUrl = `${host}/.netlify/functions/addon/${token}/manifest.json`;
+  const stremioUrl = `stremio://${host.replace("https://", "")}/.netlify/functions/addon/${token}/manifest.json`;
 
   return jsonResponse(200, {
     token,
