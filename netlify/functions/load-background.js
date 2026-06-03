@@ -32,21 +32,30 @@ async function hsetBatch(key, map) {
   const entries = Object.entries(map);
   if (entries.length === 0) return;
 
-  const BATCH = 200; // fields per request
+  // Use POST pipeline to avoid 431 Request Header Fields Too Large
+  // that occurs when encoding large field sets in the URL path.
+  const BATCH = 500;
   for (let i = 0; i < entries.length; i += BATCH) {
     const slice = entries.slice(i, i + BATCH);
-    const args = ["HSET", key, ...slice.flat()];
-    const path = args.map(encodeURIComponent).join("/");
-    await fetch(`${UPSTASH_URL}/${path}`, {
-      headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` },
+    await fetch(`${UPSTASH_URL}/pipeline`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${UPSTASH_TOKEN}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify([["HSET", key, ...slice.flat()]]),
     });
   }
 
-  // Set TTL on the key after all fields are written
-  await fetch(
-    `${UPSTASH_URL}/${["EXPIRE", key, String(INDEX_TTL)].map(encodeURIComponent).join("/")}`,
-    { headers: { Authorization: `Bearer ${UPSTASH_TOKEN}` } }
-  );
+  // Set TTL after all fields written
+  await fetch(`${UPSTASH_URL}/pipeline`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${UPSTASH_TOKEN}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify([["EXPIRE", key, INDEX_TTL]]),
+  });
 }
 
 // ── Normalize name for fuzzy key ─────────────────────────────────────────────
