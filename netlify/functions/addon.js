@@ -52,7 +52,7 @@ function parsePath(path) {
   const parts = stripped.split("/");
   return {
     token:    parts[0] || null,
-    resource: parts[1] || null,
+    resource: (parts[1] || "").replace(/\.json$/, ""),
   };
 }
 
