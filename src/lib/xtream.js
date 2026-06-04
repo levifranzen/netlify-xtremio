@@ -69,7 +69,13 @@ class XtreamClient {
     const cached = await cache.getCatalogLive(this.ph);
     if (cached) return categoryId ? cached.filter(s => s.category_id == categoryId) : cached;
 
-    const streams = await fetchWithRetry(this._apiUrl("get_live_streams"));
+    const raw = await fetchWithRetry(this._apiUrl("get_live_streams"));
+    const streams = raw.map(s => ({
+      stream_id:   s.stream_id,
+      name:        s.name,
+      stream_icon: s.stream_icon || null,
+      category_id: s.category_id,
+    }));
     await cache.setCatalogLive(this.ph, streams);
     return categoryId ? streams.filter(s => s.category_id == categoryId) : streams;
   }
@@ -82,8 +88,19 @@ class XtreamClient {
 
   async getMovies(categoryId = null) {
     const cached = await cache.getCatalogMovies(this.ph);
-    const movies = cached || await fetchWithRetry(this._apiUrl("get_vod_streams"));
-    if (!cached) await cache.setCatalogMovies(this.ph, movies);
+    if (cached) return categoryId ? cached.filter(m => m.category_id == categoryId) : cached;
+
+    const raw = await fetchWithRetry(this._apiUrl("get_vod_streams"));
+    const movies = raw.map(m => ({
+      stream_id:           m.stream_id,
+      name:                m.name,
+      year:                m.year || null,
+      container_extension: m.container_extension || "mp4",
+      category_id:         m.category_id,
+      tmdb_id:             m.tmdb_id || null,
+      stream_icon:         m.stream_icon || null,
+    }));
+    await cache.setCatalogMovies(this.ph, movies);
     return categoryId ? movies.filter(m => m.category_id == categoryId) : movies;
   }
 
@@ -99,8 +116,18 @@ class XtreamClient {
 
   async getSeries(categoryId = null) {
     const cached = await cache.getCatalogSeries(this.ph);
-    const series = cached || await fetchWithRetry(this._apiUrl("get_series"));
-    if (!cached) await cache.setCatalogSeries(this.ph, series);
+    if (cached) return categoryId ? cached.filter(s => s.category_id == categoryId) : cached;
+
+    const raw = await fetchWithRetry(this._apiUrl("get_series"));
+    const series = raw.map(s => ({
+      series_id:   s.series_id,
+      name:        s.name,
+      releaseDate: s.releaseDate || s.release_date || null,
+      category_id: s.category_id,
+      tmdb_id:     s.tmdb_id || null,
+      cover:       s.cover || null,
+    }));
+    await cache.setCatalogSeries(this.ph, series);
     return categoryId ? series.filter(s => s.category_id == categoryId) : series;
   }
 
