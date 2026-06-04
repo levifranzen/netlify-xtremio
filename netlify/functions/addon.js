@@ -292,14 +292,25 @@ async function handleStream(event, { xtream, keyHash }) {
         if (match) {
           const info = await xtream.getSeriesInfo(match.series_id);
           const eps  = info?.episodes?.[String(season)] || [];
-          const ep   = eps.find(e => String(e.episode_num) === String(episode));
+
+          // Strategy 1: match by S01E01 pattern in episode title (same as Python)
+          const pattern = new RegExp(`S0?${parseInt(season)}E0?${parseInt(episode)}(?!\\d)`, "i");
+          let ep = eps.find(e => pattern.test(e.title || ""));
+
+          // Strategy 2: fallback by episode_num field
+          if (!ep) ep = eps.find(e => String(e.episode_num) === String(episode));
+
+          // Strategy 3: fallback by index (ep 1 = index 0)
+          if (!ep && eps.length >= parseInt(episode)) ep = eps[parseInt(episode) - 1];
+
           if (ep) {
+            const ext = ep.container_extension || "mp4";
             streams = [
-              { url: xtream.getEpisodeStreamUrl(ep.id, "mp4"), title: "MP4" },
-              { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
+              { url: xtream.getEpisodeStreamUrl(ep.id, ext), title: ext.toUpperCase() },
             ];
+            console.log(`[stream] episode found: id=${ep.id} ext=${ext}`);
           } else {
-            console.log(`[stream] episode not found: season=${season} episode=${episode}, available seasons:`, Object.keys(info?.episodes || {}));
+            console.log(`[stream] episode not found: season=${season} episode=${episode} available:`, Object.keys(info?.episodes || {}));
           }
         }
       }
