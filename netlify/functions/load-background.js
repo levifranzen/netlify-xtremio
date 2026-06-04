@@ -2,13 +2,13 @@
  * load-background.js — /.netlify/functions/load-background
  *
  * Netlify Background Function (up to 15 min execution).
- * Builds and persists the Provider Index in Redis.
+ * Builds and persists the Provider Index in Redis as HASH.
  *
  * POST { token }
  *
  * Writes:
- *   provider:{ph}:idx:movies  HASH  { "breaking bad" → [[1234, "2008"]] }
- *   provider:{ph}:idx:series  HASH  { "breaking bad" → [[9876, "2008"]] }
+ *   provider:{ph}:idx:movies  HASH  { "devoradoresdestrelas" → [[2806051, "2026"]] }
+ *   provider:{ph}:idx:series  HASH  { "breakingbad" → [[9876, "2008"]] }
  *   provider:{ph}:idx:status  JSON  { state, movies, series, movieKeys, seriesKeys, ts }
  *
  * Returns:
@@ -16,21 +16,15 @@
  */
 
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
-const { cache, keys, del, hsetBatch, hlen } = require("../../src/lib/cache");
+const { cache, keys, del, hsetBatch, cmd } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
-const { normalize, cleanIptvTitle } = require("../../src/lib/normalize");
+const { cleanIptvTitle } = require("../../src/lib/normalize");
 
-// TTL for index keys — 2h, longer than catalog (30min) so index outlives
-// the raw catalog cache and doesn't need to be rebuilt as often.
-const IDX_TTL = 60 * 60 * 2;
+const IDX_TTL = 60 * 60 * 24 * 30; // 2h — outlives catalog cache (30 days)
 
 /**
- * Build a { normalizedTitle: [[id, year], ...] } map from a list of items.
- * Multiple items can share the same normalized title (e.g. remakes).
- *
- * @param {Array}  items    Raw list from Xtream (movies or series)
- * @param {string} idField  Field name for the stream/series ID
- * @param {string} yearField Field name for the release year
+ * Build { normalizedTitle: [[id, year], ...] } map from provider list.
+ * Multiple entries per title handle remakes / duplicates.
  */
 function buildMap(items, idField, yearField) {
   const map = {};
@@ -48,18 +42,12 @@ function buildMap(items, idField, yearField) {
 }
 
 /**
- * Persist a map to a Redis HASH with TTL.
- * Deletes the existing key first to avoid stale fields from removed titles.
+ * Persist a map to Redis HASH with TTL.
+ * Deletes existing key first to avoid stale entries from removed titles.
  */
 async function persistIndex(key, map, ttl) {
-  // 1. Delete old index to avoid stale entries
   await del(key);
-
-  // 2. Write new index in batches of 50 HSET commands per pipeline call
   await hsetBatch(key, map, 50);
-
-  // 3. Set TTL — separate command after all fields are written
-  const { cmd } = require("../../src/lib/cache");
   await cmd("EXPIRE", key, ttl);
 }
 
@@ -76,7 +64,7 @@ exports.handler = async (event) => {
   const { token } = body;
   if (!token) return { statusCode: 400, body: "Missing token" };
 
-  // ── Auth (manual — token is in body, not URL path) ────────────────────────
+  // ── Auth ──────────────────────────────────────────────────────────────────
   let payload;
   try { payload = verifyToken(token); } catch {
     return { statusCode: 401, body: "Invalid token" };
@@ -84,23 +72,18 @@ exports.handler = async (event) => {
 
   const { serverUrl, username, password, apiKey } = payload;
   const keyHash = hashApiKey(apiKey);
-  const ph = providerHash(serverUrl);
+  const ph      = providerHash(serverUrl);
 
   const keyData = await cache.getApiKey(keyHash).catch(() => null);
   if (!keyData || keyData.revoked) {
     return { statusCode: 403, body: "Revoked key" };
   }
 
-  // ── Mark in-progress ──────────────────────────────────────────────────────
   await cache.setIdxStatus(ph, { state: "indexing", ts: Date.now() });
 
   const xtream = new XtreamClient(serverUrl, username, password);
 
   try {
-    // ── Fetch catalogs ────────────────────────────────────────────────────────
-    // These go through xtream.js which caches in Redis (30min TTL).
-    // If the catalog cache is warm, these are Redis GETs — fast.
-    // If cold, they hit the provider API once and populate cache.
     console.log(`[load] ${ph} — fetching catalogs`);
     const [movies, series] = await Promise.all([
       xtream.getMovies(),
@@ -108,24 +91,19 @@ exports.handler = async (event) => {
     ]);
     console.log(`[load] ${ph} — movies: ${movies.length}, series: ${series.length}`);
 
-    // ── Build in-memory maps ──────────────────────────────────────────────────
-    // movies: stream_id + year field is "year" in Xtream VOD
-    // series: series_id + releaseDate (we take first 4 chars)
     const movieMap  = buildMap(movies, "stream_id", "year");
     const seriesMap = buildMap(series, "series_id", "releaseDate");
 
     const movieKeys  = Object.keys(movieMap).length;
     const seriesKeys = Object.keys(seriesMap).length;
-    console.log(`[load] ${ph} — unique movie titles: ${movieKeys}, series titles: ${seriesKeys}`);
+    console.log(`[load] ${ph} — unique titles: movies=${movieKeys}, series=${seriesKeys}`);
 
-    // ── Persist to Redis ──────────────────────────────────────────────────────
     console.log(`[load] ${ph} — persisting movie index`);
     await persistIndex(keys.idxMovies(ph), movieMap, IDX_TTL);
 
     console.log(`[load] ${ph} — persisting series index`);
     await persistIndex(keys.idxSeries(ph), seriesMap, IDX_TTL);
 
-    // ── Final status ──────────────────────────────────────────────────────────
     const stats = { state: "done", movies: movies.length, series: series.length, movieKeys, seriesKeys, ts: Date.now() };
     await cache.setIdxStatus(ph, stats);
     console.log(`[load] ${ph} — done`, stats);

@@ -6,16 +6,12 @@
  */
 
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
-const { cache, get } = require("../../src/lib/cache");
+const { cache } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
 const { getMovieByImdbId, getSeriesByImdbId, getMatchNames, movieToMeta, seriesToMeta } = require("../../src/lib/tmdb");
 const { normalize, cleanIptvTitle } = require("../../src/lib/normalize");
 
 const PAGE_SIZE = 100;
-
-function normalizeName(name) {
-  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "").trim();
-}
 
 function json(statusCode, body, extra = {}) {
   return {
@@ -158,6 +154,24 @@ async function handleCatalog(event, { xtream }) {
 
 // ── Meta ──────────────────────────────────────────────────────────────────────
 
+function buildVideos(info) {
+  const videos = [];
+  for (const [season, eps] of Object.entries(info?.episodes || {})) {
+    for (const ep of eps) {
+      videos.push({
+        id:       `xtream:ep:${ep.id}`,
+        title:    ep.title || `Episode ${ep.episode_num}`,
+        season:   parseInt(season),
+        episode:  parseInt(ep.episode_num),
+        released: ep.added ? new Date(parseInt(ep.added) * 1000).toISOString() : null,
+        overview:  ep.info?.plot || null,
+        thumbnail: ep.info?.movie_image || null,
+      });
+    }
+  }
+  return videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
+}
+
 async function handleMeta(event, { xtream }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/meta\//, "");
   const parts = stripped.split("/");
@@ -180,41 +194,38 @@ async function handleMeta(event, { xtream }) {
     const [, itemType, itemId] = id.split(":");
 
     if (itemType === "movie") {
-      const info = await xtream.getMovieInfo(itemId);
-      const m = info?.info || {};
+      const info  = await xtream.getMovieInfo(itemId);
+      const m     = info?.info || {};
+      const mdata = info?.movie_data || {};
       return json(200, { meta: {
         id, type: "movie",
-        name: m.name || "Unknown",
-        poster: m.movie_image || null,
+        name:        m.name || mdata.name || "Unknown",
+        poster:      m.movie_image || null,
+        background:  m.backdrop_path?.[0] ? `https://image.tmdb.org/t/p/w1280${m.backdrop_path[0]}` : null,
         description: m.plot || null,
         releaseInfo: m.releasedate?.split("-")[0] || null,
-        imdbRating: m.rating_5based ? String((m.rating_5based * 2).toFixed(1)) : null,
-        genres: m.genre ? m.genre.split(",").map(g => g.trim()) : [],
+        imdbRating:  m.rating_5based ? String((m.rating_5based * 2).toFixed(1)) : null,
+        runtime:     m.duration || null,
+        genres:      m.genre ? m.genre.split(",").map(g => g.trim()) : [],
+        cast:        m.cast ? m.cast.split(",").map(c => c.trim()) : [],
+        director:    m.director ? [m.director] : [],
       }});
     }
 
     if (itemType === "series") {
       const info = await xtream.getSeriesInfo(itemId);
-      const s = info?.info || {};
-      const videos = [];
-      for (const [season, eps] of Object.entries(info?.episodes || {})) {
-        for (const ep of eps) {
-          videos.push({
-            id: `xtream:ep:${ep.id}`,
-            title: ep.title || `Episode ${ep.episode_num}`,
-            season: parseInt(season),
-            episode: parseInt(ep.episode_num),
-            released: ep.added ? new Date(parseInt(ep.added) * 1000).toISOString() : null,
-          });
-        }
-      }
+      const s    = info?.info || {};
       return json(200, { meta: {
         id, type: "series",
-        name: s.name || "Unknown",
-        poster: s.cover || null,
+        name:        s.name || "Unknown",
+        poster:      s.cover || null,
+        background:  s.backdrop_path?.[0] ? `https://image.tmdb.org/t/p/w1280${s.backdrop_path[0]}` : null,
         description: s.plot || null,
         releaseInfo: s.releaseDate?.split("-")[0] || null,
-        videos: videos.sort((a, b) => a.season - b.season || a.episode - b.episode),
+        imdbRating:  s.rating_5based ? String((s.rating_5based * 2).toFixed(1)) : null,
+        genres:      s.genre ? s.genre.split(",").map(g => g.trim()) : [],
+        cast:        s.cast ? s.cast.split(",").map(c => c.trim()) : [],
+        videos:      buildVideos(info),
       }});
     }
 
@@ -304,9 +315,9 @@ async function handleStream(event, { xtream, keyHash }) {
         const match      = findBestMatch(allMovies, tmdb.id, matchNames);
         console.log(`[stream] movie: imdb=${id} names=${JSON.stringify(matchNames)} match=${match?.stream_id || "NONE"}`);
         if (match) {
+          const ext = match.container_extension || "mp4";
           streams = [
-            { url: xtream.getMovieStreamUrl(match.stream_id, "mp4"), title: "MP4" },
-            { url: xtream.getMovieStreamUrl(match.stream_id, "mkv"), title: "MKV" },
+            { url: xtream.getMovieStreamUrl(match.stream_id, ext), title: ext.toUpperCase() },
           ];
         }
       }
