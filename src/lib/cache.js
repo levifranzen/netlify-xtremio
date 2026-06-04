@@ -5,16 +5,16 @@
  * that occur when large values are encoded in the URL path.
  *
  * Cache key schema:
- *   provider:{providerHash}:categories          TTL 30min
- *   provider:{providerHash}:catalog:movies      TTL 30min
- *   provider:{providerHash}:catalog:series      TTL 30min
- *   provider:{providerHash}:catalog:live        TTL 30min
- *   provider:{providerHash}:series:{id}         TTL 2h
- *   provider:{providerHash}:idx:movies          TTL 30min  (JSON index blob)
- *   provider:{providerHash}:idx:series          TTL 30min  (JSON index blob)
- *   provider:{providerHash}:idx:status          TTL 30min
- *   tmdb:movie:{imdbId}                         TTL 24h
- *   tmdb:series:{imdbId}                        TTL 24h
+ *   provider:{providerHash}:categories          TTL 30 days
+ *   provider:{providerHash}:catalog:movies      TTL 30 min
+ *   provider:{providerHash}:catalog:series      TTL 30 min
+ *   provider:{providerHash}:catalog:live        TTL 30 min
+ *   provider:{providerHash}:series:{id}         TTL 30 days
+ *   provider:{providerHash}:idx:movies          TTL 30 days  (HASH — field per normalized title)
+ *   provider:{providerHash}:idx:series          TTL 30 days  (HASH — field per normalized title)
+ *   provider:{providerHash}:idx:status          TTL 30 days
+ *   tmdb:movie:{imdbId}                         TTL 30 days
+ *   tmdb:series:{imdbId}                        TTL 30 days
  *   apikey:{hashedKey}                          no TTL (admin managed)
  *   apikey:{hashedKey}:stats                    no TTL (counters)
  *   blocked:provider:{providerHash}             no TTL (admin managed)
@@ -23,17 +23,12 @@
 const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-// TTLs in seconds
 const TTL = {
-  CATEGORIES:  60 * 30,
-  CATALOG:     60 * 30,
-  SERIES_INFO: 60 * 60 * 2,
-  TMDB:        60 * 60 * 24,
+  CATALOG:     60 * 30,           // 30 min  — raw catalog lists
+  LONG:        60 * 60 * 24 * 30, // 30 days — everything else
 };
 
 // ─── Core: POST pipeline ──────────────────────────────────────────────────────
-// Sends one or more Redis commands as a JSON array via POST.
-// Returns array of results in the same order.
 
 async function pipeline(...commands) {
   if (!UPSTASH_URL || !UPSTASH_TOKEN) {
@@ -52,7 +47,6 @@ async function pipeline(...commands) {
     throw new Error(`Redis error: ${res.status} ${text}`);
   }
   const results = await res.json();
-  // pipeline returns [{result: ...}, {result: ...}]
   return results.map(r => r.result);
 }
 
@@ -91,53 +85,95 @@ async function exists(key) {
   return result === 1;
 }
 
-// ─── Provider-scoped cache helpers ───────────────────────────────────────────
+// ─── HASH helpers (for provider index) ───────────────────────────────────────
+
+async function hset(key, field, value) {
+  return cmd("HSET", key, field, JSON.stringify(value));
+}
+
+async function hget(key, field) {
+  const val = await cmd("HGET", key, field);
+  if (val === null || val === undefined) return null;
+  try { return JSON.parse(val); } catch { return val; }
+}
+
+async function hlen(key) {
+  return cmd("HLEN", key);
+}
+
+async function hdel(key, ...fields) {
+  return cmd("HDEL", key, ...fields);
+}
+
+/**
+ * Write a { field: value } map to a Redis HASH in batches via pipeline.
+ * Sends batchSize HSET commands per pipeline call.
+ */
+async function hsetBatch(key, map, batchSize = 50) {
+  const entries = Object.entries(map);
+  if (entries.length === 0) return;
+
+  for (let i = 0; i < entries.length; i += batchSize) {
+    const slice = entries.slice(i, i + batchSize);
+    const commands = slice.map(([field, value]) => [
+      "HSET", key, field, JSON.stringify(value),
+    ]);
+    await pipeline(...commands);
+  }
+}
+
+// ─── Key schema ───────────────────────────────────────────────────────────────
 
 const keys = {
-  categories:     (ph)     => `provider:${ph}:categories`,
-  catalogMovies:  (ph)     => `provider:${ph}:catalog:movies`,
-  catalogSeries:  (ph)     => `provider:${ph}:catalog:series`,
-  catalogLive:    (ph)     => `provider:${ph}:catalog:live`,
-  seriesInfo:     (ph, id) => `provider:${ph}:series:${id}`,
-  idxMovies:      (ph)     => `provider:${ph}:idx:movies`,
-  idxSeries:      (ph)     => `provider:${ph}:idx:series`,
-  idxStatus:      (ph)     => `provider:${ph}:idx:status`,  tmdbMovie:      (id)     => `tmdb:movie:${id}`,
-  tmdbSeries:     (id)     => `tmdb:series:${id}`,
-  apiKey:         (hash)   => `apikey:${hash}`,
-  apiKeyStats:    (hash)   => `apikey:${hash}:stats`,
-  blockedProvider:(ph)     => `blocked:provider:${ph}`,
+  categories:      (ph)     => `provider:${ph}:categories`,
+  catalogMovies:   (ph)     => `provider:${ph}:catalog:movies`,
+  catalogSeries:   (ph)     => `provider:${ph}:catalog:series`,
+  catalogLive:     (ph)     => `provider:${ph}:catalog:live`,
+  seriesInfo:      (ph, id) => `provider:${ph}:series:${id}`,
+  idxMovies:       (ph)     => `provider:${ph}:idx:movies`,
+  idxSeries:       (ph)     => `provider:${ph}:idx:series`,
+  idxStatus:       (ph)     => `provider:${ph}:idx:status`,
+  tmdbMovie:       (id)     => `tmdb:movie:${id}`,
+  tmdbSeries:      (id)     => `tmdb:series:${id}`,
+  apiKey:          (hash)   => `apikey:${hash}`,
+  apiKeyStats:     (hash)   => `apikey:${hash}:stats`,
+  blockedProvider: (ph)     => `blocked:provider:${ph}`,
 };
 
+// ─── High-level cache helpers ─────────────────────────────────────────────────
+
 const cache = {
-  // Provider catalog
+  // Provider catalog — short TTL (data changes frequently)
   async getCategories(ph)        { return get(keys.categories(ph)); },
-  async setCategories(ph, v)     { return set(keys.categories(ph), v, TTL.CATEGORIES); },
+  async setCategories(ph, v)     { return set(keys.categories(ph), v, TTL.LONG); },
   async getCatalogMovies(ph)     { return get(keys.catalogMovies(ph)); },
   async setCatalogMovies(ph, v)  { return set(keys.catalogMovies(ph), v, TTL.CATALOG); },
   async getCatalogSeries(ph)     { return get(keys.catalogSeries(ph)); },
   async setCatalogSeries(ph, v)  { return set(keys.catalogSeries(ph), v, TTL.CATALOG); },
   async getCatalogLive(ph)       { return get(keys.catalogLive(ph)); },
   async setCatalogLive(ph, v)    { return set(keys.catalogLive(ph), v, TTL.CATALOG); },
+
+  // Series info — long TTL
   async getSeriesInfo(ph, id)    { return get(keys.seriesInfo(ph, id)); },
-  async setSeriesInfo(ph, id, v) { return set(keys.seriesInfo(ph, id), v, TTL.SERIES_INFO); },
+  async setSeriesInfo(ph, id, v) { return set(keys.seriesInfo(ph, id), v, TTL.LONG); },
 
-  // Provider index (Redis HASH — field per normalized title)
-  idxMoviesKey:  (ph)          => keys.idxMovies(ph),
-  idxSeriesKey:  (ph)          => keys.idxSeries(ph),
-  async getIdxMovie(ph, field) { return hget(keys.idxMovies(ph), field); },
-  async getIdxSeries(ph, field){ return hget(keys.idxSeries(ph), field); },
-  async lenIdxMovies(ph)       { return hlen(keys.idxMovies(ph)); },
-  async lenIdxSeries(ph)       { return hlen(keys.idxSeries(ph)); },
-  async getIdxStatus(ph)       { return get(keys.idxStatus(ph)); },
-  async setIdxStatus(ph, v)    { return set(keys.idxStatus(ph), v, TTL.CATALOG); },
+  // Provider index (HASH) — long TTL, rebuilt by load-background
+  idxMoviesKey:               (ph)          => keys.idxMovies(ph),
+  idxSeriesKey:               (ph)          => keys.idxSeries(ph),
+  async getIdxMovie(ph, field)              { return hget(keys.idxMovies(ph), field); },
+  async getIdxSeries(ph, field)             { return hget(keys.idxSeries(ph), field); },
+  async lenIdxMovies(ph)                    { return hlen(keys.idxMovies(ph)); },
+  async lenIdxSeries(ph)                    { return hlen(keys.idxSeries(ph)); },
+  async getIdxStatus(ph)                    { return get(keys.idxStatus(ph)); },
+  async setIdxStatus(ph, v)                 { return set(keys.idxStatus(ph), v, TTL.LONG); },
 
-  // TMDB metadata
+  // TMDB metadata — long TTL
   async getTmdbMovie(id)         { return get(keys.tmdbMovie(id)); },
-  async setTmdbMovie(id, v)      { return set(keys.tmdbMovie(id), v, TTL.TMDB); },
+  async setTmdbMovie(id, v)      { return set(keys.tmdbMovie(id), v, TTL.LONG); },
   async getTmdbSeries(id)        { return get(keys.tmdbSeries(id)); },
-  async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.TMDB); },
+  async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.LONG); },
 
-  // API key management
+  // API key management — no TTL (admin controlled)
   async getApiKey(hash)          { return get(keys.apiKey(hash)); },
   async setApiKey(hash, v)       { return set(keys.apiKey(hash), v); },
   async delApiKey(hash)          { return del(keys.apiKey(hash)); },
@@ -160,10 +196,10 @@ const cache = {
     return (result || []).map(k => k.replace("apikey:", "").replace(":stats", ""));
   },
 
-  // Provider blocklist
-  async isProviderBlocked(ph)        { return exists(keys.blockedProvider(ph)); },
-  async blockProvider(ph, reason)    { return set(keys.blockedProvider(ph), { reason, blockedAt: Date.now() }); },
-  async unblockProvider(ph)          { return del(keys.blockedProvider(ph)); },
+  // Provider blocklist — no TTL (admin controlled)
+  async isProviderBlocked(ph)     { return exists(keys.blockedProvider(ph)); },
+  async blockProvider(ph, reason) { return set(keys.blockedProvider(ph), { reason, blockedAt: Date.now() }); },
+  async unblockProvider(ph)       { return del(keys.blockedProvider(ph)); },
   async getAllBlockedProviders() {
     const result = await cmd("KEYS", "blocked:provider:*");
     return (result || []).map(k => k.replace("blocked:provider:", ""));
@@ -171,58 +207,3 @@ const cache = {
 };
 
 module.exports = { cache, TTL, keys, get, set, del, cmd, pipeline, hset, hget, hlen, hdel, hsetBatch };
-
-// ─── HASH helpers (for provider index) ───────────────────────────────────────
-
-/**
- * Set a single field in a Redis HASH, serializing value as JSON.
- */
-async function hset(key, field, value) {
-  return cmd("HSET", key, field, JSON.stringify(value));
-}
-
-/**
- * Get a single field from a Redis HASH, deserializing JSON automatically.
- * Returns null if key or field does not exist.
- */
-async function hget(key, field) {
-  const val = await cmd("HGET", key, field);
-  if (val === null || val === undefined) return null;
-  try { return JSON.parse(val); } catch { return val; }
-}
-
-/**
- * Get the number of fields in a HASH.
- */
-async function hlen(key) {
-  return cmd("HLEN", key);
-}
-
-/**
- * Delete one or more fields from a HASH.
- */
-async function hdel(key, ...fields) {
-  return cmd("HDEL", key, ...fields);
-}
-
-/**
- * Write a { field: value } map to a Redis HASH in batches via pipeline.
- * Each value is serialized as JSON. Sends batchSize HSET commands per
- * pipeline call to avoid oversized payloads (50 is safe for ~200 byte values).
- *
- * @param {string} key       Redis HASH key
- * @param {object} map       Plain object { field: value }
- * @param {number} batchSize Commands per pipeline call (default 50)
- */
-async function hsetBatch(key, map, batchSize = 50) {
-  const entries = Object.entries(map);
-  if (entries.length === 0) return;
-
-  for (let i = 0; i < entries.length; i += batchSize) {
-    const slice = entries.slice(i, i + batchSize);
-    const commands = slice.map(([field, value]) => [
-      "HSET", key, field, JSON.stringify(value),
-    ]);
-    await pipeline(...commands);
-  }
-}
