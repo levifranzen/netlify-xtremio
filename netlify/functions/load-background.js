@@ -18,7 +18,7 @@
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
 const { cache, keys, del, hsetBatch, hlen } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
-const { normalize } = require("../../src/lib/normalize");
+const { normalize, cleanIptvTitle } = require("../../src/lib/normalize");
 
 // TTL for index keys — 2h, longer than catalog (30min) so index outlives
 // the raw catalog cache and doesn't need to be rebuilt as often.
@@ -35,7 +35,7 @@ const IDX_TTL = 60 * 60 * 2;
 function buildMap(items, idField, yearField) {
   const map = {};
   for (const item of items) {
-    const title = normalize(item.name || item.title || "");
+    const title = cleanIptvTitle(item.name || item.title || "");
     if (!title) continue;
 
     const id   = item[idField];
