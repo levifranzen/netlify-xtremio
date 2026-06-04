@@ -8,7 +8,8 @@
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
 const { cache, get } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
-const { getMovieByImdbId, getSeriesByImdbId, movieToMeta, seriesToMeta } = require("../../src/lib/tmdb");
+const { getMovieByImdbId, getSeriesByImdbId, getMatchNames, movieToMeta, seriesToMeta } = require("../../src/lib/tmdb");
+const { normalize, cleanIptvTitle } = require("../../src/lib/normalize");
 
 const PAGE_SIZE = 100;
 
@@ -232,29 +233,22 @@ async function handleMeta(event, { xtream }) {
 
 // ── Stream match helpers ──────────────────────────────────────────────────────
 
-// Tries multiple strategies to match a TMDB entry to a provider item.
-// Order: exact tmdb_id → normalized name exact → normalized name includes
-function findBestMatch(items, tmdbId, ...names) {
-  const normNames = names.filter(Boolean).map(normalizeName);
-
-  // 1. tmdb_id exact match (when provider populates it correctly)
+// Match TMDB result against provider list.
+// Provider titles are cleaned with cleanIptvTitle (removes year, tags, country prefix).
+// TMDB names are normalized with normalize (same slug, no noise to remove).
+// Strategies in order: tmdb_id → pt-BR name exact → original name exact
+function findBestMatch(items, tmdbId, matchNames) {
+  // 1. tmdb_id numeric match
   if (tmdbId) {
     const m = items.find(i => i.tmdb_id && String(i.tmdb_id) === String(tmdbId));
     if (m) return m;
   }
 
-  // 2. Normalized name exact match
-  for (const norm of normNames) {
-    const m = items.find(i => normalizeName(i.name) === norm || normalizeName(i.title) === norm);
-    if (m) return m;
-  }
-
-  // 3. Normalized name includes (handles "(2024)" suffixes, etc.)
-  for (const norm of normNames) {
-    const m = items.find(i => {
-      const iNorm = normalizeName(i.name || i.title);
-      return iNorm.includes(norm) || norm.includes(iNorm);
-    });
+  // 2. Name match — normalize both sides
+  for (const name of matchNames) {
+    const normName = normalize(name);
+    if (!normName) continue;
+    const m = items.find(i => cleanIptvTitle(i.name || i.title || "") === normName);
     if (m) return m;
   }
 
@@ -279,9 +273,10 @@ async function handleStream(event, { xtream, keyHash }) {
 
       const tmdb = await getSeriesByImdbId(imdbId);
       if (tmdb) {
-        const allSeries = await xtream.getSeries();
-        const match = findBestMatch(allSeries, tmdb.id, tmdb.name, tmdb.original_name);
-        console.log(`[stream] series lookup: imdb=${imdbId} tmdb_id=${tmdb.id} name="${tmdb.name}" match=${match?.series_id || "NONE"}`);
+        const allSeries  = await xtream.getSeries();
+        const matchNames = getMatchNames(tmdb, "series");
+        const match      = findBestMatch(allSeries, tmdb.id, matchNames);
+        console.log(`[stream] series: imdb=${imdbId} names=${JSON.stringify(matchNames)} match=${match?.series_id || "NONE"}`);
 
         if (match) {
           const info = await xtream.getSeriesInfo(match.series_id);
@@ -304,9 +299,10 @@ async function handleStream(event, { xtream, keyHash }) {
     else if (id.startsWith("tt") && type === "movie") {
       const tmdb = await getMovieByImdbId(id);
       if (tmdb) {
-        const allMovies = await xtream.getMovies();
-        const match = findBestMatch(allMovies, tmdb.id, tmdb.title, tmdb.original_title);
-        console.log(`[stream] movie lookup: imdb=${id} tmdb_id=${tmdb.id} name="${tmdb.title}" match=${match?.stream_id || "NONE"}`);
+        const allMovies  = await xtream.getMovies();
+        const matchNames = getMatchNames(tmdb, "movie");
+        const match      = findBestMatch(allMovies, tmdb.id, matchNames);
+        console.log(`[stream] movie: imdb=${id} names=${JSON.stringify(matchNames)} match=${match?.stream_id || "NONE"}`);
         if (match) {
           streams = [
             { url: xtream.getMovieStreamUrl(match.stream_id, "mp4"), title: "MP4" },

@@ -1,43 +1,31 @@
 /**
  * tmdb.js — TMDB metadata client
  *
- * Enriches Xtream stream entries with poster, description, rating, etc.
- * Results cached in Redis by IMDb ID (TTL 24h) since metadata rarely changes.
+ * Fetches in pt-BR so translated titles (e.g. "Devoradores de Estrelas")
+ * match what providers typically use in Portuguese-speaking markets.
+ * Falls back to original_title/original_name for ASCII-only titles,
+ * mirroring the logic in the original index.py.
  *
- * Requires env var: TMDB_API_KEY
+ * Results cached in Redis by IMDb ID (TTL 24h).
  */
 
 const fetch = require("node-fetch");
 const { cache } = require("./cache");
 
 const TMDB_BASE = "https://api.themoviedb.org/3";
-const TMDB_KEY = process.env.TMDB_API_KEY;
-const IMG_BASE = "https://image.tmdb.org/t/p/w500";
+const TMDB_KEY  = process.env.TMDB_API_KEY;
+const IMG_BASE  = "https://image.tmdb.org/t/p/w500";
+const LANG      = "pt-BR";
 
 async function tmdbFetch(path) {
   if (!TMDB_KEY) return null;
-  const res = await fetch(`${TMDB_BASE}${path}&api_key=${TMDB_KEY}`, { timeout: 8000 });
+  const sep = path.includes("?") ? "&" : "?";
+  const res = await fetch(`${TMDB_BASE}${path}${sep}api_key=${TMDB_KEY}&language=${LANG}`, { timeout: 8000 });
   if (!res.ok) return null;
   return res.json();
 }
 
-// ─── Search by title + year ───────────────────────────────────────────────────
-
-async function searchMovie(title, year = null) {
-  const q = encodeURIComponent(title);
-  const yearParam = year ? `&year=${year}` : "";
-  const data = await tmdbFetch(`/search/movie?query=${q}${yearParam}`);
-  return data?.results?.[0] || null;
-}
-
-async function searchSeries(title, year = null) {
-  const q = encodeURIComponent(title);
-  const yearParam = year ? `&first_air_date_year=${year}` : "";
-  const data = await tmdbFetch(`/search/tv?query=${q}${yearParam}`);
-  return data?.results?.[0] || null;
-}
-
-// ─── Fetch by external IMDb ID ────────────────────────────────────────────────
+// ─── Fetch by IMDb ID ─────────────────────────────────────────────────────────
 
 async function getMovieByImdbId(imdbId) {
   const cached = await cache.getTmdbMovie(imdbId);
@@ -59,7 +47,23 @@ async function getSeriesByImdbId(imdbId) {
   return series;
 }
 
-// ─── Normalize to Stremio meta format ────────────────────────────────────────
+// ─── Extract match names from a TMDB result ──────────────────────────────────
+// Returns [ptName, originalName] — both may be used for matching.
+// original_name is only included if ASCII (non-ASCII originals are usually
+// the same language as pt-BR and would duplicate the match attempt).
+
+function getMatchNames(tmdb, type) {
+  const ptName   = type === "movie" ? tmdb.title         : tmdb.name;
+  const origName = type === "movie" ? tmdb.original_title : tmdb.original_name;
+
+  const names = [ptName];
+  if (origName && origName !== ptName && /^[\x00-\x7F]+$/.test(origName)) {
+    names.push(origName);
+  }
+  return names.filter(Boolean);
+}
+
+// ─── Stremio meta format ──────────────────────────────────────────────────────
 
 function movieToMeta(id, stream, tmdb) {
   return {
@@ -89,4 +93,4 @@ function seriesToMeta(id, stream, tmdb) {
   };
 }
 
-module.exports = { searchMovie, searchSeries, getMovieByImdbId, getSeriesByImdbId, movieToMeta, seriesToMeta };
+module.exports = { getMovieByImdbId, getSeriesByImdbId, getMatchNames, movieToMeta, seriesToMeta };
