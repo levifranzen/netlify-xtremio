@@ -3,21 +3,29 @@
  *
  * All methods cache by providerHash so users sharing the same
  * serverUrl share cache entries without exposing credentials.
+ *
+ * Uses native fetch (Node 18+) with AbortController timeout.
  */
 
-const fetch = require("node-fetch");
 const { cache } = require("./cache");
 const { providerHash } = require("./token");
 
-// ─── HTTP helper with retry ───────────────────────────────────────────────────
+const FETCH_TIMEOUT_MS = 20000;
+
+// ─── HTTP helper with retry and proper timeout ────────────────────────────────
 
 async function fetchWithRetry(url, retries = 3, delayMs = 500) {
   for (let attempt = 1; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+
     try {
-      const res = await fetch(url, { timeout: 20000 });
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     } catch (err) {
+      clearTimeout(timer);
       if (attempt === retries) throw err;
       await new Promise(r => setTimeout(r, delayMs * attempt));
     }
@@ -28,11 +36,10 @@ async function fetchWithRetry(url, retries = 3, delayMs = 500) {
 
 class XtreamClient {
   constructor(serverUrl, username, password) {
-    // Normalise trailing slash
-    this.base = serverUrl.replace(/\/$/, "");
+    this.base     = serverUrl.replace(/\/$/, "");
     this.username = username;
     this.password = password;
-    this.ph = providerHash(serverUrl);
+    this.ph       = providerHash(serverUrl);
   }
 
   _apiUrl(action, extra = "") {
@@ -46,7 +53,7 @@ class XtreamClient {
     return fetchWithRetry(url);
   }
 
-  // ── Categories ───────────────────────────────────────────────────────────
+  // ── Categories ────────────────────────────────────────────────────────────
 
   async getCategories() {
     const cached = await cache.getCategories(this.ph);
@@ -105,7 +112,12 @@ class XtreamClient {
   }
 
   async getMovieInfo(vodId) {
-    return fetchWithRetry(this._apiUrl("get_vod_info", `&vod_id=${vodId}`));
+    const cached = await cache.getSeriesInfo(this.ph, `movie:${vodId}`);
+    if (cached) return cached;
+
+    const info = await fetchWithRetry(this._apiUrl("get_vod_info", `&vod_id=${vodId}`));
+    await cache.setSeriesInfo(this.ph, `movie:${vodId}`, info);
+    return info;
   }
 
   getMovieStreamUrl(streamId, ext = "mp4") {
@@ -135,7 +147,6 @@ class XtreamClient {
     const cached = await cache.getSeriesInfo(this.ph, seriesId);
     if (cached) return cached;
 
-    // Retry up to 3x — some providers are flaky on this endpoint
     const info = await fetchWithRetry(this._apiUrl("get_series_info", `&series_id=${seriesId}`), 3, 800);
     await cache.setSeriesInfo(this.ph, seriesId, info);
     return info;
