@@ -295,8 +295,8 @@ async function handleStream(event, { xtream, keyHash }) {
           const ep   = eps.find(e => String(e.episode_num) === String(episode));
           if (ep) {
             streams = [
-              { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
               { url: xtream.getEpisodeStreamUrl(ep.id, "mp4"), title: "MP4" },
+              { url: xtream.getEpisodeStreamUrl(ep.id, "mkv"), title: "MKV" },
             ];
           } else {
             console.log(`[stream] episode not found: season=${season} episode=${episode}, available seasons:`, Object.keys(info?.episodes || {}));
@@ -335,8 +335,8 @@ async function handleStream(event, { xtream, keyHash }) {
         cache.incrStat(keyHash, "streams_movie").catch(() => {});
       } else if (itemType === "ep") {
         streams = [
-          { url: xtream.getEpisodeStreamUrl(itemId, "mkv"), title: "MKV" },
           { url: xtream.getEpisodeStreamUrl(itemId, "mp4"), title: "MP4" },
+          { url: xtream.getEpisodeStreamUrl(itemId, "mkv"), title: "MKV" },
         ];
         cache.incrStat(keyHash, "streams_series").catch(() => {});
       } else if (itemType === "live") {
