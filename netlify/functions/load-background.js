@@ -20,7 +20,7 @@ const { cache, keys, del, hsetBatch, cmd } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
 const { cleanIptvTitle } = require("../../src/lib/normalize");
 
-const IDX_TTL = 60 * 60 * 2; // 2h — outlives catalog cache (30min)
+const IDX_TTL = 60 * 60 * 24 * 30; // 2h — outlives catalog cache (30 days)
 
 /**
  * Build { normalizedTitle: [[id, year], ...] } map from provider list.
