@@ -6,16 +6,12 @@
  */
 
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
-const { cache, get } = require("../../src/lib/cache");
+const { cache } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
 const { getMovieByImdbId, getSeriesByImdbId, getMatchNames, movieToMeta, seriesToMeta } = require("../../src/lib/tmdb");
 const { normalize, cleanIptvTitle } = require("../../src/lib/normalize");
 
 const PAGE_SIZE = 100;
-
-function normalizeName(name) {
-  return (name || "").toLowerCase().replace(/[^a-z0-9]/g, "").trim();
-}
 
 function json(statusCode, body, extra = {}) {
   return {
@@ -304,9 +300,9 @@ async function handleStream(event, { xtream, keyHash }) {
         const match      = findBestMatch(allMovies, tmdb.id, matchNames);
         console.log(`[stream] movie: imdb=${id} names=${JSON.stringify(matchNames)} match=${match?.stream_id || "NONE"}`);
         if (match) {
+          const ext = match.container_extension || "mp4";
           streams = [
-            { url: xtream.getMovieStreamUrl(match.stream_id, "mp4"), title: "MP4" },
-            { url: xtream.getMovieStreamUrl(match.stream_id, "mkv"), title: "MKV" },
+            { url: xtream.getMovieStreamUrl(match.stream_id, ext), title: ext.toUpperCase() },
           ];
         }
       }
