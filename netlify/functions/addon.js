@@ -299,23 +299,36 @@ async function handleStream(event, { xtream, keyHash }) {
 
       const tmdb = await getSeriesByImdbId(imdbId);
       if (tmdb) {
-        const allSeries  = await xtream.getSeries();
         const matchNames = getMatchNames(tmdb, "series");
-        const matches    = findAllMatches(allSeries, tmdb.id, matchNames);
+        let matches = [];
+
+        // Fast path: tmdb_map has a known mapping from a previous name match
+        const cachedSeriesId = await cache.getTmdbMapSeries(auth.ph, tmdb.id).catch(() => null);
+        if (cachedSeriesId) {
+          const allSeries = await xtream.getSeries();
+          const item = allSeries.find(s => String(s.series_id) === String(cachedSeriesId));
+          if (item) matches = [item];
+        }
+
+        // Slow path: scan full list and populate map for next time
+        if (matches.length === 0) {
+          const allSeries = await xtream.getSeries();
+          matches = findAllMatches(allSeries, tmdb.id, matchNames);
+          // Populate tmdb_map with first match (fire-and-forget)
+          if (matches.length > 0) {
+            cache.setTmdbMapSeries(auth.ph, tmdb.id, matches[0].series_id).catch(() => {});
+          }
+        }
+
         console.log(`[stream] series: imdb=${imdbId} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
 
         for (const match of matches) {
           const info = await xtream.getSeriesInfo(match.series_id);
           const eps  = info?.episodes?.[String(season)] || [];
 
-          // Strategy 1: match by S01E01 pattern in episode title
           const pattern = new RegExp(`S0?${parseInt(season)}E0?${parseInt(episode)}(?!\\d)`, "i");
           let ep = eps.find(e => pattern.test(e.title || ""));
-
-          // Strategy 2: fallback by episode_num field
           if (!ep) ep = eps.find(e => String(e.episode_num) === String(episode));
-
-          // Strategy 3: fallback by index (ep 1 = index 0)
           if (!ep && eps.length >= parseInt(episode)) ep = eps[parseInt(episode) - 1];
 
           if (ep) {
