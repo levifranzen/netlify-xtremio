@@ -135,6 +135,8 @@ const keys = {
   idxStatus:       (ph)     => `provider:${ph}:idx:status`,
   tmdbMovie:       (id)     => `tmdb:movie:${id}`,
   tmdbSeries:      (id)     => `tmdb:series:${id}`,
+  tmdbMapMovies:   (ph)     => `provider:${ph}:tmdb_map:movies`,
+  tmdbMapSeries:   (ph)     => `provider:${ph}:tmdb_map:series`,
   apiKey:          (hash)   => `apikey:${hash}`,
   apiKeyStats:     (hash)   => `apikey:${hash}:stats`,
   blockedProvider: (ph)     => `blocked:provider:${ph}`,
@@ -172,6 +174,13 @@ const cache = {
   async setTmdbMovie(id, v)      { return set(keys.tmdbMovie(id), v, TTL.LONG); },
   async getTmdbSeries(id)        { return get(keys.tmdbSeries(id)); },
   async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.LONG); },
+
+  // TMDB → provider ID map — populated on successful name match
+  // Avoids full list scan on subsequent requests for the same title
+  async getTmdbMapMovie(ph, tmdbId)          { return hget(keys.tmdbMapMovies(ph), String(tmdbId)); },
+  async setTmdbMapMovie(ph, tmdbId, streamId){ return hset(keys.tmdbMapMovies(ph), String(tmdbId), String(streamId)); },
+  async getTmdbMapSeries(ph, tmdbId)         { return hget(keys.tmdbMapSeries(ph), String(tmdbId)); },
+  async setTmdbMapSeries(ph, tmdbId, seriesId){ return hset(keys.tmdbMapSeries(ph), String(tmdbId), String(seriesId)); },
 
   // API key management — no TTL (admin controlled)
   async getApiKey(hash)          { return get(keys.apiKey(hash)); },
