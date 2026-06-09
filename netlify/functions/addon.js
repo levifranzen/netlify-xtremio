@@ -5,6 +5,7 @@
  * Provider index removed for MVP — stream lookup uses cached catalog list.
  */
 
+const crypto = require("crypto");
 const { verifyToken, hashApiKey, providerHash } = require("../../src/lib/token");
 const { cache } = require("../../src/lib/cache");
 const { XtreamClient } = require("../../src/lib/xtream");
@@ -19,6 +20,55 @@ function json(statusCode, body, extra = {}) {
     headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*", ...extra },
     body: JSON.stringify(body),
   };
+}
+
+
+// ── Live channel grouping ────────────────────────────────────────────────────
+
+function cleanLiveChannelName(name) {
+  return String(name || "")
+    .replace(/\b(SD|FHD|HD|UHD|4K|H265|HEVC|ALT)\b/gi, "")
+    .replace(/\[\s*\]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function liveGroupKey(name) {
+  const cleanName = cleanLiveChannelName(name);
+  const words = cleanName.split(/\s+/).filter(Boolean);
+  return normalize(words.slice(0, 2).join(" "));
+}
+
+function groupLiveChannels(channels) {
+  const grouped = {};
+
+  for (const channel of channels || []) {
+    const key = liveGroupKey(channel.name);
+    if (!key) continue;
+
+    if (!grouped[key]) {
+      const displayName = cleanLiveChannelName(channel.name) || channel.name || "Live TV";
+      grouped[key] = {
+        id: crypto.createHash("md5").update(key).digest("hex"),
+        key,
+        name: displayName,
+        logo: channel.stream_icon || null,
+        list: [],
+      };
+    }
+
+    grouped[key].list.push(channel);
+
+    if (!grouped[key].logo && channel.stream_icon) {
+      grouped[key].logo = channel.stream_icon;
+    }
+  }
+
+  return Object.values(grouped);
+}
+
+function findLiveGroupById(channels, groupId) {
+  return groupLiveChannels(channels).find(group => String(group.id) === String(groupId));
 }
 
 // ── Auth ──────────────────────────────────────────────────────────────────────
@@ -139,9 +189,15 @@ async function handleCatalog(event, { xtream }) {
         if (cat) items = items.filter(s => s.category_id == cat.category_id);
       }
       if (search) items = items.filter(s => s.name?.toLowerCase().includes(search));
-      metas = items.slice(skip, skip + PAGE_SIZE).map(s => ({
-        id: `xtream:live:${s.stream_id}`,
-        type: "tv", name: s.name, poster: s.stream_icon || null,
+
+      const groups = groupLiveChannels(items);
+      metas = groups.slice(skip, skip + PAGE_SIZE).map(g => ({
+        id: `xtream:ai:${g.id}`,
+        type: "tv",
+        name: g.name,
+        poster: g.logo || null,
+        posterShape: "square",
+        description: g.list.map(i => i.name).join("\n"),
       }));
     }
 
@@ -177,7 +233,6 @@ async function handleMeta(event, { xtream }) {
   const parts = stripped.split("/");
   const type = parts[0];
   const id   = decodeURIComponent((parts[1] || "").replace(/\.json$/, ""));
-  const providerHashForCache = ph || xtream?.ph;
 
   try {
     // IMDb IDs — enrich via TMDB
@@ -227,6 +282,19 @@ async function handleMeta(event, { xtream }) {
         genres:      s.genre ? s.genre.split(",").map(g => g.trim()) : [],
         cast:        s.cast ? s.cast.split(",").map(c => c.trim()) : [],
         videos:      buildVideos(info),
+      }});
+    }
+
+    if (itemType === "ai") {
+      const liveStreams = await xtream.getLiveStreams();
+      const group = findLiveGroupById(liveStreams, itemId);
+      return json(200, { meta: {
+        id,
+        type: "tv",
+        name: group?.name || `Live group ${itemId}`,
+        poster: group?.logo || null,
+        posterShape: "square",
+        description: group ? group.list.map(i => i.name).join("\n") : null,
       }});
     }
 
@@ -305,7 +373,6 @@ async function handleStream(event, { xtream, keyHash, ph }) {
   const parts = stripped.split("/");
   const type = parts[0];
   const id   = decodeURIComponent((parts[1] || "").replace(/\.json$/, ""));
-  const providerHashForCache = ph || xtream?.ph;
 
   try {
     let streams = [];
@@ -435,6 +502,18 @@ async function handleStream(event, { xtream, keyHash, ph }) {
           { name: "ST | MKV", url: xtream.getEpisodeStreamUrl(itemId, "mkv") },
         ];
         cache.incrStat(keyHash, "streams_series").catch(() => {});
+      } else if (itemType === "ai") {
+        const liveStreams = await xtream.getLiveStreams();
+        const group = findLiveGroupById(liveStreams, itemId);
+
+        if (group) {
+          streams = group.list.map(channel => ({
+            name: channel.name,
+            url: xtream.getLiveStreamUrl(channel.stream_id, "m3u8"),
+          }));
+        }
+
+        cache.incrStat(keyHash, "streams_live").catch(() => {});
       } else if (itemType === "live") {
         streams = [
           { name: "ST | HLS", url: xtream.getLiveStreamUrl(itemId, "m3u8") },
