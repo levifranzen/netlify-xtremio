@@ -22,6 +22,20 @@ function json(statusCode, body, extra = {}) {
   };
 }
 
+function providerDisplayName(payload) {
+  return String(payload?.providerName || "Xtremio").trim() || "Xtremio";
+}
+
+function liveFormat(payload) {
+  const format = String(payload?.liveFormat || "m3u8").trim().toLowerCase();
+  return format === "ts" ? "ts" : "m3u8";
+}
+
+function tmdbLanguage(payload) {
+  const lang = String(payload?.tmdbLanguage || process.env.TMDB_LANGUAGE || "pt-BR").trim();
+  return /^[a-z]{2}-[A-Z]{2}$/.test(lang) ? lang : "pt-BR";
+}
+
 
 // ── Live channel grouping ────────────────────────────────────────────────────
 
@@ -108,20 +122,21 @@ function parsePath(path) {
 function handleManifest(event, payload) {
   const host = `https://${event.headers.host}`;
   const { token } = parsePath(event.path);
+  const name = providerDisplayName(payload);
 
   const manifest = {
-    id: `com.xtremio.saas.${Buffer.from(payload.serverUrl).toString("base64url").slice(0, 12)}`,
+    id: `com.xtremio.saas.${crypto.createHash("sha256").update(`${payload.serverUrl}|${payload.username || ""}|${name}`).digest("hex").slice(0, 12)}`,
     version: "1.0.0",
-    name: "Xtremio",
-    description: "Your IPTV provider via Xtream Codes, powered by Xtremio SaaS",
+    name,
+    description: `${name} via Xtream Codes, powered by Xtremio SaaS`,
     logo: `${host}/logo.png`,
     resources: ["catalog", "meta", "stream"],
     types: ["movie", "series", "tv"],
     idPrefixes: ["tt", "xtream:"],
     catalogs: [
-      { type: "movie",  id: "xtremio_movies", name: "IPTV Movies",  extra: [{ name: "genre" }, { name: "search" }] },
-      { type: "series", id: "xtremio_series", name: "IPTV Series",  extra: [{ name: "genre" }, { name: "search" }] },
-      { type: "tv",     id: "xtremio_live",   name: "IPTV Live TV", extra: [{ name: "genre" }] },
+      { type: "movie",  id: "xtremio_movies", name: `${name} Movies`,  extra: [{ name: "genre" }, { name: "search" }] },
+      { type: "series", id: "xtremio_series", name: `${name} Series`,  extra: [{ name: "genre" }, { name: "search" }] },
+      { type: "tv",     id: "xtremio_live",   name: `${name} Live TV`, extra: [{ name: "genre" }] },
     ],
     behaviorHints: { adult: false, p2p: false },
   };
@@ -228,7 +243,7 @@ function buildVideos(info) {
   return videos.sort((a, b) => a.season - b.season || a.episode - b.episode);
 }
 
-async function handleMeta(event, { xtream }) {
+async function handleMeta(event, { xtream, payload }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/meta\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
@@ -238,11 +253,11 @@ async function handleMeta(event, { xtream }) {
     // IMDb IDs — enrich via TMDB
     if (id.startsWith("tt")) {
       if (type === "movie") {
-        const tmdb = await getMovieByImdbId(id);
+        const tmdb = await getMovieByImdbId(id, tmdbLanguage(payload));
         return json(200, { meta: movieToMeta(id, null, tmdb) });
       }
       if (type === "series") {
-        const tmdb = await getSeriesByImdbId(id);
+        const tmdb = await getSeriesByImdbId(id, tmdbLanguage(payload));
         return json(200, { meta: seriesToMeta(id, null, tmdb) });
       }
     }
@@ -368,11 +383,15 @@ function matchesFromIds(items, ids, type) {
 
 // ── Stream ────────────────────────────────────────────────────────────────────
 
-async function handleStream(event, { xtream, keyHash, ph }) {
+async function handleStream(event, { xtream, keyHash, ph, payload }) {
   const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/stream\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
   const id   = decodeURIComponent((parts[1] || "").replace(/\.json$/, ""));
+  const providerHashForCache = ph;
+  const providerName = providerDisplayName(payload);
+  const selectedLiveFormat = liveFormat(payload);
+  const selectedTmdbLanguage = tmdbLanguage(payload);
 
   try {
     let streams = [];
@@ -382,7 +401,7 @@ async function handleStream(event, { xtream, keyHash, ph }) {
     if (ttSeries) {
       const [, imdbId, season, episode] = ttSeries;
 
-      const tmdb = await getSeriesByImdbId(imdbId);
+      const tmdb = await getSeriesByImdbId(imdbId, selectedTmdbLanguage);
       if (tmdb) {
         const matchNames = getMatchNames(tmdb, "series");
         let matches = [];
@@ -427,7 +446,7 @@ async function handleStream(event, { xtream, keyHash, ph }) {
           if (ep) {
             const ext = ep.container_extension || "mp4";
             streams.push({
-              name: `ST | ${match.name}`,
+              name: `${providerName} | ${match.name}`,
               description: match.releaseDate ? `Ano: ${String(match.releaseDate).split("-")[0]}` : `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`,
               url: xtream.getEpisodeStreamUrl(ep.id, ext),
             });
@@ -443,7 +462,7 @@ async function handleStream(event, { xtream, keyHash, ph }) {
     }
 
     else if (id.startsWith("tt") && type === "movie") {
-      const tmdb = await getMovieByImdbId(id);
+      const tmdb = await getMovieByImdbId(id, selectedTmdbLanguage);
       if (tmdb) {
         const allMovies  = await xtream.getMovies();
         const matchNames = getMatchNames(tmdb, "movie");
@@ -478,7 +497,7 @@ async function handleStream(event, { xtream, keyHash, ph }) {
         for (const match of matches) {
           const ext = match.container_extension || "mp4";
           streams.push({
-            name: `ST | ${match.name}`,
+            name: `${providerName} | ${match.name}`,
             description: match.year ? `Ano: ${String(match.year)}` : undefined,
             url: xtream.getMovieStreamUrl(match.stream_id, ext),
           });
@@ -492,14 +511,14 @@ async function handleStream(event, { xtream, keyHash, ph }) {
       const [, itemType, itemId] = id.split(":");
       if (itemType === "movie") {
         streams = [
-          { name: "ST | MP4", url: xtream.getMovieStreamUrl(itemId, "mp4") },
-          { name: "ST | MKV", url: xtream.getMovieStreamUrl(itemId, "mkv") },
+          { name: `${providerName} | MP4`, url: xtream.getMovieStreamUrl(itemId, "mp4") },
+          { name: `${providerName} | MKV`, url: xtream.getMovieStreamUrl(itemId, "mkv") },
         ];
         cache.incrStat(keyHash, "streams_movie").catch(() => {});
       } else if (itemType === "ep") {
         streams = [
-          { name: "ST | MP4", url: xtream.getEpisodeStreamUrl(itemId, "mp4") },
-          { name: "ST | MKV", url: xtream.getEpisodeStreamUrl(itemId, "mkv") },
+          { name: `${providerName} | MP4`, url: xtream.getEpisodeStreamUrl(itemId, "mp4") },
+          { name: `${providerName} | MKV`, url: xtream.getEpisodeStreamUrl(itemId, "mkv") },
         ];
         cache.incrStat(keyHash, "streams_series").catch(() => {});
       } else if (itemType === "ai") {
@@ -508,16 +527,15 @@ async function handleStream(event, { xtream, keyHash, ph }) {
 
         if (group) {
           streams = group.list.map(channel => ({
-            name: channel.name,
-            url: xtream.getLiveStreamUrl(channel.stream_id, "m3u8"),
+            name: `${providerName} | ${channel.name}`,
+            url: xtream.getLiveStreamUrl(channel.stream_id, selectedLiveFormat),
           }));
         }
 
         cache.incrStat(keyHash, "streams_live").catch(() => {});
       } else if (itemType === "live") {
         streams = [
-          { name: "ST | HLS", url: xtream.getLiveStreamUrl(itemId, "m3u8") },
-          { name: "ST | TS",  url: xtream.getLiveStreamUrl(itemId, "ts") },
+          { name: `${providerName} | ${selectedLiveFormat.toUpperCase()}`, url: xtream.getLiveStreamUrl(itemId, selectedLiveFormat) },
         ];
         cache.incrStat(keyHash, "streams_live").catch(() => {});
       }

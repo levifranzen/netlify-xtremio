@@ -117,14 +117,14 @@
       text-transform: uppercase; letter-spacing: 0.08em;
       margin-bottom: 8px;
     }
-    .field input {
+    .field input, .field select {
       width: 100%; background: var(--bg);
       border: 1px solid var(--border); border-radius: var(--radius);
       color: var(--text); font-family: var(--mono); font-size: 13px;
       padding: 10px 12px; outline: none;
       transition: border-color 0.15s, box-shadow 0.15s;
     }
-    .field input:focus {
+    .field input:focus, .field select:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px rgba(232,255,71,0.08);
     }
@@ -225,6 +225,23 @@
         <label>Server URL</label>
         <input type="url" id="serverUrl" placeholder="http://your-provider.com:8080" />
       </div>
+      <div class="field">
+        <label>Provider Name</label>
+        <input type="text" id="providerName" placeholder="DNS5 Play" value="Xtremio" autocomplete="off" />
+      </div>
+      <div class="field-row">
+        <div class="field">
+          <label>Live Format</label>
+          <select id="liveFormat">
+            <option value="m3u8" selected>m3u8</option>
+            <option value="ts">ts</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>TMDB Language</label>
+          <input type="text" id="tmdbLanguage" placeholder="pt-BR" value="pt-BR" autocomplete="off" />
+        </div>
+      </div>
       <div class="field-row">
         <div class="field">
           <label>Username</label>
@@ -270,9 +287,17 @@
     const serverUrl = document.getElementById('serverUrl').value.trim();
     const username  = document.getElementById('username').value.trim();
     const password  = document.getElementById('password').value.trim();
+    const providerName = document.getElementById('providerName').value.trim() || 'Xtremio';
+    const liveFormat = document.getElementById('liveFormat').value;
+    const tmdbLanguage = document.getElementById('tmdbLanguage').value.trim() || 'pt-BR';
 
     if (!apiKey || !serverUrl || !username || !password) {
       showStatus('error', 'All fields are required.');
+      return;
+    }
+
+    if (!/^[a-z]{2}-[A-Z]{2}$/.test(tmdbLanguage)) {
+      showStatus('error', 'TMDB Language must use the format pt-BR, en-US, es-ES, etc.');
       return;
     }
 
@@ -286,7 +311,7 @@
       const res = await fetch(API, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey, serverUrl, username, password }),
+        body: JSON.stringify({ apiKey, serverUrl, username, password, providerName, liveFormat, tmdbLanguage }),
       });
 
       const data = await res.json();

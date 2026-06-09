@@ -14,8 +14,8 @@
  *   provider:{providerHash}:idx:movies          TTL 30 days  (HASH — field per normalized title)
  *   provider:{providerHash}:idx:series          TTL 30 days  (HASH — field per normalized title)
  *   provider:{providerHash}:idx:status          TTL 30 days
- *   tmdb:movie:{imdbId}                         TTL 30 days
- *   tmdb:series:{imdbId}                        TTL 30 days
+ *   tmdb:movie:{language}:{imdbId}              TTL 30 days
+ *   tmdb:series:{language}:{imdbId}             TTL 30 days
  *   apikey:{hashedKey}                          no TTL (admin managed)
  *   apikey:{hashedKey}:stats                    no TTL (counters)
  *   blocked:provider:{providerHash}             no TTL (admin managed)
@@ -135,8 +135,8 @@ const keys = {
   idxSeries:       (ph)     => `provider:${ph}:idx:series`,
   idxStatus:       (ph)     => `provider:${ph}:idx:status`,
   providerMatch:   (ph, id) => `provider:${ph}:${id}`,
-  tmdbMovie:       (id)     => `tmdb:movie:${id}`,
-  tmdbSeries:      (id)     => `tmdb:series:${id}`,
+  tmdbMovie:       (lang, id) => `tmdb:movie:${lang}:${id}`,
+  tmdbSeries:      (lang, id) => `tmdb:series:${lang}:${id}`,
   apiKey:          (hash)   => `apikey:${hash}`,
   apiKeyStats:     (hash)   => `apikey:${hash}:stats`,
   blockedProvider: (ph)     => `blocked:provider:${ph}`,
@@ -170,10 +170,10 @@ const cache = {
   async setIdxStatus(ph, v)                 { return set(keys.idxStatus(ph), v, TTL.LONG); },
 
   // TMDB metadata — long TTL
-  async getTmdbMovie(id)         { return get(keys.tmdbMovie(id)); },
-  async setTmdbMovie(id, v)      { return set(keys.tmdbMovie(id), v, TTL.LONG); },
-  async getTmdbSeries(id)        { return get(keys.tmdbSeries(id)); },
-  async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.LONG); },
+  async getTmdbMovie(id, lang = "pt-BR")     { return get(keys.tmdbMovie(lang, id)); },
+  async setTmdbMovie(id, v, lang = "pt-BR")  { return set(keys.tmdbMovie(lang, id), v, TTL.LONG); },
+  async getTmdbSeries(id, lang = "pt-BR")    { return get(keys.tmdbSeries(lang, id)); },
+  async setTmdbSeries(id, v, lang = "pt-BR") { return set(keys.tmdbSeries(lang, id), v, TTL.LONG); },
 
   // TMDB → provider IDs.
   // key: provider:{ph}:{tmdbId}
