@@ -10,6 +10,7 @@
  *   provider:{providerHash}:catalog:series      TTL 30 min
  *   provider:{providerHash}:catalog:live        TTL 30 min
  *   provider:{providerHash}:series:{id}         TTL 30 days
+ *   provider:{providerHash}:{tmdbId}            TTL 30 days  (TMDB -> provider IDs)
  *   provider:{providerHash}:idx:movies          TTL 30 days  (HASH — field per normalized title)
  *   provider:{providerHash}:idx:series          TTL 30 days  (HASH — field per normalized title)
  *   provider:{providerHash}:idx:status          TTL 30 days
@@ -133,10 +134,9 @@ const keys = {
   idxMovies:       (ph)     => `provider:${ph}:idx:movies`,
   idxSeries:       (ph)     => `provider:${ph}:idx:series`,
   idxStatus:       (ph)     => `provider:${ph}:idx:status`,
+  providerMatch:   (ph, id) => `provider:${ph}:${id}`,
   tmdbMovie:       (id)     => `tmdb:movie:${id}`,
   tmdbSeries:      (id)     => `tmdb:series:${id}`,
-  tmdbMapMovies:   (ph)     => `provider:${ph}:tmdb_map:movies`,
-  tmdbMapSeries:   (ph)     => `provider:${ph}:tmdb_map:series`,
   apiKey:          (hash)   => `apikey:${hash}`,
   apiKeyStats:     (hash)   => `apikey:${hash}:stats`,
   blockedProvider: (ph)     => `blocked:provider:${ph}`,
@@ -175,12 +175,21 @@ const cache = {
   async getTmdbSeries(id)        { return get(keys.tmdbSeries(id)); },
   async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.LONG); },
 
-  // TMDB → provider ID map — populated on successful name match
-  // Avoids full list scan on subsequent requests for the same title
-  async getTmdbMapMovie(ph, tmdbId)          { return hget(keys.tmdbMapMovies(ph), String(tmdbId)); },
-  async setTmdbMapMovie(ph, tmdbId, streamId){ return hset(keys.tmdbMapMovies(ph), String(tmdbId), String(streamId)); },
-  async getTmdbMapSeries(ph, tmdbId)         { return hget(keys.tmdbMapSeries(ph), String(tmdbId)); },
-  async setTmdbMapSeries(ph, tmdbId, seriesId){ return hset(keys.tmdbMapSeries(ph), String(tmdbId), String(seriesId)); },
+  // TMDB → provider IDs.
+  // key: provider:{ph}:{tmdbId}
+  // value: [stream_id] when called from movie flow OR [series_id] when called from series flow.
+  async getProviderMatch(ph, tmdbId) {
+    const value = await get(keys.providerMatch(ph, tmdbId));
+    if (!Array.isArray(value)) return null;
+    return value.map(id => Number(id)).filter(Boolean);
+  },
+  async setProviderMatch(ph, tmdbId, providerIds) {
+    const ids = Array.isArray(providerIds)
+      ? [...new Set(providerIds.map(id => Number(id)).filter(Boolean))]
+      : [];
+    if (ids.length === 0) return null;
+    return set(keys.providerMatch(ph, tmdbId), ids, TTL.LONG);
+  },
 
   // API key management — no TTL (admin controlled)
   async getApiKey(hash)          { return get(keys.apiKey(hash)); },

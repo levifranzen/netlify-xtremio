@@ -177,6 +177,7 @@ async function handleMeta(event, { xtream }) {
   const parts = stripped.split("/");
   const type = parts[0];
   const id   = decodeURIComponent((parts[1] || "").replace(/\.json$/, ""));
+  const providerHashForCache = ph || xtream?.ph;
 
   try {
     // IMDb IDs — enrich via TMDB
@@ -281,6 +282,22 @@ function findAllMatches(items, tmdbId, matchNames) {
   return matched;
 }
 
+function idsFromMatches(matches, type) {
+  const field = type === "series" ? "series_id" : "stream_id";
+  return [...new Set(
+    (matches || [])
+      .map(item => item?.[field])
+      .filter(Boolean)
+      .map(Number)
+  )];
+}
+
+function matchesFromIds(items, ids, type) {
+  const field = type === "series" ? "series_id" : "stream_id";
+  const wanted = new Set((ids || []).map(id => String(id)));
+  return (items || []).filter(item => wanted.has(String(item?.[field])));
+}
+
 // ── Stream ────────────────────────────────────────────────────────────────────
 
 async function handleStream(event, { xtream, keyHash, ph }) {
@@ -303,21 +320,29 @@ async function handleStream(event, { xtream, keyHash, ph }) {
         const matchNames = getMatchNames(tmdb, "series");
         let matches = [];
 
-        // Fast path: tmdb_map has a known mapping from a previous name match
-        const cachedSeriesId = await cache.getTmdbMapSeries(providerHashForCache, tmdb.id).catch((err) => { console.error("[stream] tmdb_map get error", err?.message || err); return null; });
-        if (cachedSeriesId) {
-          const allSeries = await xtream.getSeries();
-          const item = allSeries.find(s => String(s.series_id) === String(cachedSeriesId));
-          if (item) matches = [item];
+        const allSeries = await xtream.getSeries();
+
+        // Fast path: final match cache.
+        // key: provider:{ph}:{tmdb_id}
+        // value: [series_id, series_id]
+        const cachedProviderIds = await cache.getProviderMatch(providerHashForCache, tmdb.id).catch((err) => {
+          console.error("[stream] provider match get error", err?.message || err);
+          return null;
+        });
+
+        if (cachedProviderIds?.length) {
+          matches = matchesFromIds(allSeries, cachedProviderIds, "series");
         }
 
-        // Slow path: scan full list and populate map for next time
+        // Discovery path: use cached provider catalog, then save the final match.
         if (matches.length === 0) {
-          const allSeries = await xtream.getSeries();
           matches = findAllMatches(allSeries, tmdb.id, matchNames);
-          // Populate tmdb_map with first match (fire-and-forget)
-          if (matches.length > 0) {
-            cache.setTmdbMapSeries(providerHashForCache, tmdb.id, matches[0].series_id).catch((err) => console.error("[stream] tmdb_map set error", err?.message || err));
+
+          const providerIds = idsFromMatches(matches, "series");
+          if (providerIds.length > 0) {
+            cache.setProviderMatch(providerHashForCache, tmdb.id, providerIds).catch((err) => {
+              console.error("[stream] provider match set error", err?.message || err);
+            });
           }
         }
 
@@ -355,7 +380,32 @@ async function handleStream(event, { xtream, keyHash, ph }) {
       if (tmdb) {
         const allMovies  = await xtream.getMovies();
         const matchNames = getMatchNames(tmdb, "movie");
-        const matches    = findAllMatches(allMovies, tmdb.id, matchNames);
+        let matches = [];
+
+        // Fast path: final match cache.
+        // key: provider:{ph}:{tmdb_id}
+        // value: [stream_id, stream_id]
+        const cachedProviderIds = await cache.getProviderMatch(providerHashForCache, tmdb.id).catch((err) => {
+          console.error("[stream] provider match get error", err?.message || err);
+          return null;
+        });
+
+        if (cachedProviderIds?.length) {
+          matches = matchesFromIds(allMovies, cachedProviderIds, "movie");
+        }
+
+        // Discovery path: use cached provider catalog, then save the final match.
+        if (matches.length === 0) {
+          matches = findAllMatches(allMovies, tmdb.id, matchNames);
+
+          const providerIds = idsFromMatches(matches, "movie");
+          if (providerIds.length > 0) {
+            cache.setProviderMatch(providerHashForCache, tmdb.id, providerIds).catch((err) => {
+              console.error("[stream] provider match set error", err?.message || err);
+            });
+          }
+        }
+
         console.log(`[stream] movie: imdb=${id} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
 
         for (const match of matches) {
