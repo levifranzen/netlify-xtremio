@@ -1,7 +1,7 @@
 /**
  * configure.js — /.netlify/functions/configure
  *
- * POST { apiKey, serverUrl, username, password }
+ * POST { apiKey, serverUrl, username, password, providerName, liveFormat, tmdbLanguage }
  *   → validates API key against Redis
  *   → authenticates against Xtream provider
  *   → returns signed config token + install URL for Stremio
@@ -56,6 +56,11 @@ exports.handler = async (event) => {
   }
 
   const { apiKey, serverUrl, username, password } = body;
+  const providerName = String(body.providerName || "Xtremio").trim() || "Xtremio";
+  const liveFormatRaw = String(body.liveFormat || "m3u8").trim().toLowerCase();
+  const liveFormat = liveFormatRaw === "ts" ? "ts" : "m3u8";
+  const tmdbLanguageRaw = String(body.tmdbLanguage || process.env.TMDB_LANGUAGE || "pt-BR").trim();
+  const tmdbLanguage = /^[a-z]{2}-[A-Z]{2}$/.test(tmdbLanguageRaw) ? tmdbLanguageRaw : "pt-BR";
 
   if (!apiKey || !serverUrl || !username || !password) {
     return jsonResponse(400, { error: "Missing required fields: apiKey, serverUrl, username, password" });
@@ -88,7 +93,15 @@ exports.handler = async (event) => {
   }
 
   // ── Create signed token ─────────────────────────────────────────────────────
-  const token = createToken({ serverUrl, username, password, apiKey });
+  const token = createToken({
+    serverUrl,
+    username,
+    password,
+    apiKey,
+    providerName,
+    liveFormat,
+    tmdbLanguage,
+  });
 
   // Track configuration event
   await cache.incrStat(keyHash, "configurations").catch(() => {});
