@@ -244,47 +244,144 @@ async function handleMeta(event, { xtream }) {
 
 // ── Stream match helpers ──────────────────────────────────────────────────────
 
-// Returns ALL provider items that match a TMDB entry.
-// Multiple results happen when the provider has duplicates like:
-//   "A Origem", "A Origem [4K]", "A Origem [L]"
-// which all normalize to the same key.
-//
-// Strategies in order: tmdb_id → pt-BR name → original name
+function itemIdField(item) {
+  return item?.series_id ? "series_id" : "stream_id";
+}
+
+function addUnique(matched, seenIds, item) {
+  const field = itemIdField(item);
+  const id = item?.[field];
+  if (id && !seenIds.has(String(id))) {
+    seenIds.add(String(id));
+    matched.push(item);
+  }
+}
+
+function yearFromTmdb(tmdb, type) {
+  const date = type === "movie" ? tmdb?.release_date : tmdb?.first_air_date;
+  return date ? String(date).slice(0, 4) : null;
+}
+
+function normalizeMapValue(value) {
+  if (!value) return [];
+  if (Array.isArray(value)) return value.map(String);
+  return [String(value)]; // backwards compatibility with old string cache values
+}
+
+function orderCandidatesByYear(candidates, desiredYear) {
+  if (!desiredYear) return candidates;
+  return [...candidates].sort((a, b) => {
+    const ay = String(a?.[1] || "") === String(desiredYear) ? 0 : 1;
+    const by = String(b?.[1] || "") === String(desiredYear) ? 0 : 1;
+    return ay - by;
+  });
+}
+
+// Fallback scanner: returns ALL provider items that match a TMDB entry.
+// Strategies: tmdb_id → pt-BR name → original name
 function findAllMatches(items, tmdbId, matchNames) {
   const matched = [];
   const seenIds = new Set();
 
-  function addIfNew(item, idField) {
-    const id = item[idField];
-    if (id && !seenIds.has(id)) {
-      seenIds.add(id);
-      matched.push(item);
-    }
-  }
-
-  // 1. tmdb_id numeric match
   if (tmdbId) {
     items
       .filter(i => i.tmdb_id && String(i.tmdb_id) === String(tmdbId))
-      .forEach(i => addIfNew(i, i.series_id ? "series_id" : "stream_id"));
+      .forEach(i => addUnique(matched, seenIds, i));
   }
 
-  // 2. Name match — normalize both sides
   for (const name of matchNames) {
     const normName = normalize(name);
     if (!normName) continue;
     items
       .filter(i => cleanIptvTitle(i.name || i.title || "") === normName)
-      .forEach(i => addIfNew(i, i.series_id ? "series_id" : "stream_id"));
+      .forEach(i => addUnique(matched, seenIds, i));
   }
 
   return matched;
 }
 
+async function getItemsForType(xtream, type) {
+  return type === "series" ? xtream.getSeries() : xtream.getMovies();
+}
+
+async function getCachedProviderMatches(ph, xtream, type, tmdbId) {
+  const cached = type === "series"
+    ? await cache.getTmdbMapSeries(ph, tmdbId).catch(() => null)
+    : await cache.getTmdbMapMovie(ph, tmdbId).catch(() => null);
+
+  const ids = normalizeMapValue(cached);
+  if (ids.length === 0) return [];
+
+  const items = await getItemsForType(xtream, type);
+  const idField = type === "series" ? "series_id" : "stream_id";
+  const byId = new Map(items.map(item => [String(item[idField]), item]));
+
+  return ids.map(id => byId.get(String(id))).filter(Boolean);
+}
+
+async function setCachedProviderMatches(ph, type, tmdbId, matches) {
+  const idField = type === "series" ? "series_id" : "stream_id";
+  const ids = matches.map(item => item?.[idField]).filter(Boolean);
+  if (ids.length === 0) return;
+
+  if (type === "series") {
+    await cache.setTmdbMapSeries(ph, tmdbId, ids);
+  } else {
+    await cache.setTmdbMapMovie(ph, tmdbId, ids);
+  }
+}
+
+async function findMatchesUsingProviderIndex(ph, xtream, type, tmdb, matchNames) {
+  const items = await getItemsForType(xtream, type);
+  const idField = type === "series" ? "series_id" : "stream_id";
+  const byId = new Map(items.map(item => [String(item[idField]), item]));
+  const desiredYear = yearFromTmdb(tmdb, type);
+  const matched = [];
+  const seenIds = new Set();
+
+  for (const name of matchNames) {
+    const field = normalize(name);
+    if (!field) continue;
+
+    const candidates = type === "series"
+      ? await cache.getIdxSeries(ph, field).catch(() => null)
+      : await cache.getIdxMovie(ph, field).catch(() => null);
+
+    for (const [id] of orderCandidatesByYear(candidates || [], desiredYear)) {
+      const item = byId.get(String(id));
+      if (item) addUnique(matched, seenIds, item);
+    }
+  }
+
+  return matched;
+}
+
+async function resolveProviderMatches(ph, xtream, type, tmdb, matchNames) {
+  // 1) Direct match cache: provider:{ph}:tmdb_map:{movies|series}
+  let matches = await getCachedProviderMatches(ph, xtream, type, tmdb.id);
+  if (matches.length > 0) return { matches, source: "tmdb_map" };
+
+  // 2) Provider index cache: provider:{ph}:idx:{movies|series}
+  matches = await findMatchesUsingProviderIndex(ph, xtream, type, tmdb, matchNames);
+
+  // 3) Fallback scan. This also handles providers that have not run load-background yet.
+  if (matches.length === 0) {
+    const items = await getItemsForType(xtream, type);
+    matches = findAllMatches(items, tmdb.id, matchNames);
+  }
+
+  // Persist successful provider match for next requests.
+  if (matches.length > 0) {
+    await setCachedProviderMatches(ph, type, tmdb.id, matches).catch(() => {});
+  }
+
+  return { matches, source: matches.length > 0 ? "resolved" : "miss" };
+}
+
 // ── Stream ────────────────────────────────────────────────────────────────────
 
-async function handleStream(event, { xtream, keyHash }) {
-  const stripped = event.path.replace(/^\/.netlify\/functions\/addon\/[^/]+\/stream\//, "");
+async function handleStream(event, { xtream, keyHash, ph }) {
+  const stripped = event.path.replace(/^\/\.netlify\/functions\/addon\/[^/]+\/stream\//, "");
   const parts = stripped.split("/");
   const type = parts[0];
   const id   = (parts[1] || "").replace(/\.json$/, "");
@@ -300,27 +397,9 @@ async function handleStream(event, { xtream, keyHash }) {
       const tmdb = await getSeriesByImdbId(imdbId);
       if (tmdb) {
         const matchNames = getMatchNames(tmdb, "series");
-        let matches = [];
+        const { matches, source } = await resolveProviderMatches(ph, xtream, "series", tmdb, matchNames);
 
-        // Fast path: tmdb_map has a known mapping from a previous name match
-        const cachedSeriesId = await cache.getTmdbMapSeries(auth.ph, tmdb.id).catch(() => null);
-        if (cachedSeriesId) {
-          const allSeries = await xtream.getSeries();
-          const item = allSeries.find(s => String(s.series_id) === String(cachedSeriesId));
-          if (item) matches = [item];
-        }
-
-        // Slow path: scan full list and populate map for next time
-        if (matches.length === 0) {
-          const allSeries = await xtream.getSeries();
-          matches = findAllMatches(allSeries, tmdb.id, matchNames);
-          // Populate tmdb_map with first match (fire-and-forget)
-          if (matches.length > 0) {
-            cache.setTmdbMapSeries(auth.ph, tmdb.id, matches[0].series_id).catch(() => {});
-          }
-        }
-
-        console.log(`[stream] series: imdb=${imdbId} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
+        console.log(`[stream] series: imdb=${imdbId} tmdb=${tmdb.id} source=${source} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
 
         for (const match of matches) {
           const info = await xtream.getSeriesInfo(match.series_id);
@@ -335,14 +414,14 @@ async function handleStream(event, { xtream, keyHash }) {
             const ext = ep.container_extension || "mp4";
             streams.push({
               url:   xtream.getEpisodeStreamUrl(ep.id, ext),
-              title: match.name,
+              title: `${match.name} S${season}E${episode}`,
             });
             console.log(`[stream] episode found: series="${match.name}" id=${ep.id} ext=${ext}`);
           }
         }
 
         if (streams.length === 0) {
-          console.log(`[stream] episode not found: season=${season} episode=${episode}`);
+          console.log(`[stream] episode not found: imdb=${imdbId} season=${season} episode=${episode}`);
         }
       }
       cache.incrStat(keyHash, "streams_series").catch(() => {});
@@ -351,10 +430,9 @@ async function handleStream(event, { xtream, keyHash }) {
     else if (id.startsWith("tt") && type === "movie") {
       const tmdb = await getMovieByImdbId(id);
       if (tmdb) {
-        const allMovies  = await xtream.getMovies();
         const matchNames = getMatchNames(tmdb, "movie");
-        const matches    = findAllMatches(allMovies, tmdb.id, matchNames);
-        console.log(`[stream] movie: imdb=${id} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
+        const { matches, source } = await resolveProviderMatches(ph, xtream, "movie", tmdb, matchNames);
+        console.log(`[stream] movie: imdb=${id} tmdb=${tmdb.id} source=${source} names=${JSON.stringify(matchNames)} matches=${matches.length}`);
 
         for (const match of matches) {
           const ext = match.container_extension || "mp4";

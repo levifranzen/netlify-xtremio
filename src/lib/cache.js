@@ -175,12 +175,29 @@ const cache = {
   async getTmdbSeries(id)        { return get(keys.tmdbSeries(id)); },
   async setTmdbSeries(id, v)     { return set(keys.tmdbSeries(id), v, TTL.LONG); },
 
-  // TMDB → provider ID map — populated on successful name match
-  // Avoids full list scan on subsequent requests for the same title
-  async getTmdbMapMovie(ph, tmdbId)          { return hget(keys.tmdbMapMovies(ph), String(tmdbId)); },
-  async setTmdbMapMovie(ph, tmdbId, streamId){ return hset(keys.tmdbMapMovies(ph), String(tmdbId), String(streamId)); },
-  async getTmdbMapSeries(ph, tmdbId)         { return hget(keys.tmdbMapSeries(ph), String(tmdbId)); },
-  async setTmdbMapSeries(ph, tmdbId, seriesId){ return hset(keys.tmdbMapSeries(ph), String(tmdbId), String(seriesId)); },
+  // TMDB → provider ID map — populated on successful provider match
+  // Stores provider IDs as arrays, e.g. provider:{ph}:tmdb_map:series HGET 1399 -> [123,456]
+  // This is the match cache that avoids rebuilding/rediscovering title matches every request.
+  async getTmdbMapMovie(ph, tmdbId) {
+    return hget(keys.tmdbMapMovies(ph), String(tmdbId));
+  },
+  async setTmdbMapMovie(ph, tmdbId, streamIds) {
+    const key = keys.tmdbMapMovies(ph);
+    return pipeline(
+      ["HSET", key, String(tmdbId), JSON.stringify(Array.isArray(streamIds) ? streamIds : [streamIds])],
+      ["EXPIRE", key, TTL.LONG],
+    );
+  },
+  async getTmdbMapSeries(ph, tmdbId) {
+    return hget(keys.tmdbMapSeries(ph), String(tmdbId));
+  },
+  async setTmdbMapSeries(ph, tmdbId, seriesIds) {
+    const key = keys.tmdbMapSeries(ph);
+    return pipeline(
+      ["HSET", key, String(tmdbId), JSON.stringify(Array.isArray(seriesIds) ? seriesIds : [seriesIds])],
+      ["EXPIRE", key, TTL.LONG],
+    );
+  },
 
   // API key management — no TTL (admin controlled)
   async getApiKey(hash)          { return get(keys.apiKey(hash)); },

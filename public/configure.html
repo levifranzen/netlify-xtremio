@@ -303,8 +303,37 @@
       document.getElementById('installBtn').href = stremioUrl;
       resultBlock.style.display = 'block';
       showStatus('success',
-        `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry}`
+        `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry} · Building provider index…`
       );
+
+      // 3. Build Redis provider index in the background.
+      // This creates provider:{ph}:idx:movies and provider:{ph}:idx:series.
+      fetch(LOAD_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token }),
+      })
+        .then(async loadRes => {
+          if (!loadRes.ok) {
+            const text = await loadRes.text();
+            console.warn('[load-background] failed:', text);
+            showStatus('success',
+              `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry} · Index will build on demand.`
+            );
+            return;
+          }
+
+          const stats = await loadRes.json().catch(() => null);
+          showStatus('success',
+            `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry} · Index ready: ${stats?.movies || 0} movies / ${stats?.series || 0} series.`
+          );
+        })
+        .catch(err => {
+          console.warn('[load-background] network error:', err);
+          showStatus('success',
+            `Connected! Status: ${userInfo?.status || 'active'} · Expires: ${expiry} · Index will build on demand.`
+          );
+        });
 
     } catch (err) {
       showStatus('error', 'Network error — check your connection.');
