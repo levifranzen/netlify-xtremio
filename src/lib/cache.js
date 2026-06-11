@@ -5,15 +5,11 @@
  * that occur when large values are encoded in the URL path.
  *
  * Cache key schema:
- *   provider:{providerHash}:categories          TTL 30 days
- *   provider:{providerHash}:catalog:movies      TTL 30 min
- *   provider:{providerHash}:catalog:series      TTL 30 min
- *   provider:{providerHash}:catalog:live        TTL 30 min
- *   provider:{providerHash}:series:{id}         TTL 30 days
+ *   catalog:{providerHash}:categories          TTL 30 days
+ *   catalog:{providerHash}:movies              TTL 30 min
+ *   catalog:{providerHash}:series              TTL 30 min
+ *   catalog:{providerHash}:live                TTL 30 min
  *   provider:{providerHash}:{tmdbId}            TTL 30 days  (TMDB -> provider IDs)
- *   provider:{providerHash}:idx:movies          TTL 30 days  (HASH — field per normalized title)
- *   provider:{providerHash}:idx:series          TTL 30 days  (HASH — field per normalized title)
- *   provider:{providerHash}:idx:status          TTL 30 days
  *   tmdb:movie:{language}:{imdbId}              TTL 30 days
  *   tmdb:series:{language}:{imdbId}             TTL 30 days
  *   apikey:{hashedKey}                          no TTL (admin managed)
@@ -25,8 +21,8 @@ const UPSTASH_URL   = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const TTL = {
-  CATALOG:     60 * 30,           // 30 min  — raw catalog lists
-  LONG:        60 * 60 * 24 * 30, // 30 days — everything else
+  CATALOG:     60 * 30 * 24 * 30,
+  LONG:        60 * 60 * 24 * 90,
 };
 
 // ─── Core: POST pipeline ──────────────────────────────────────────────────────
