@@ -1,18 +1,15 @@
 /**
  * xtream.js — Xtream Codes API client
  *
- * All methods cache by providerHash so users sharing the same
- * serverUrl share cache entries without exposing credentials.
- *
- * Uses native fetch (Node 18+) with AbortController timeout.
+ * Provider catalogs are cached in compact tuple form to keep Redis payloads small,
+ * while public methods return readable objects for handlers.
  */
 
 const { cache } = require("./cache");
 const { providerHash } = require("./token");
+const { cleanIptvTitle } = require("./normalize");
 
 const FETCH_TIMEOUT_MS = 20000;
-
-// ─── HTTP helper with retry and proper timeout ────────────────────────────────
 
 async function fetchWithRetry(url, retries = 3, delayMs = 500) {
   for (let attempt = 1; attempt <= retries; attempt++) {
@@ -32,28 +29,146 @@ async function fetchWithRetry(url, retries = 3, delayMs = 500) {
   }
 }
 
-// ─── XtreamClient class ───────────────────────────────────────────────────────
+function yearFrom(value) {
+  if (!value) return null;
+  const match = String(value).match(/(19|20)\d{2}/);
+  return match ? match[0] : null;
+}
+
+function movieToTuple(movie) {
+  const name = String(movie.name || "").trim();
+  return [
+    Number(movie.stream_id),
+    cleanIptvTitle(name),
+    name,
+    yearFrom(movie.year),
+    String(movie.container_extension || "mp4").toLowerCase(),
+    movie.category_id ?? null,
+    movie.stream_icon || null,
+    movie.tmdb_id || null,
+  ];
+}
+
+function movieFromTuple(tuple) {
+  if (!Array.isArray(tuple)) {
+    // Defensive hydration for old object-shaped caches.
+    const name = String(tuple?.name || "").trim();
+    return {
+      stream_id: tuple?.stream_id,
+      norm_name: tuple?.norm_name || cleanIptvTitle(name),
+      name,
+      year: yearFrom(tuple?.year),
+      container_extension: String(tuple?.container_extension || "mp4").toLowerCase(),
+      category_id: tuple?.category_id ?? null,
+      tmdb_id: tuple?.tmdb_id || null,
+      stream_icon: tuple?.stream_icon || null,
+    };
+  }
+
+  return {
+    stream_id: tuple[0],
+    norm_name: tuple[1] || cleanIptvTitle(tuple[2] || ""),
+    name: tuple[2] || "Unknown",
+    year: tuple[3] || null,
+    container_extension: tuple[4] || "mp4",
+    category_id: tuple[5] ?? null,
+    stream_icon: tuple[6] || null,
+    tmdb_id: tuple[7] || null,
+  };
+}
+
+function seriesToTuple(series) {
+  const name = String(series.name || "").trim();
+  return [
+    Number(series.series_id),
+    cleanIptvTitle(name),
+    name,
+    yearFrom(series.releaseDate || series.release_date),
+    series.category_id ?? null,
+    series.cover || null,
+    series.tmdb_id || null,
+  ];
+}
+
+function seriesFromTuple(tuple) {
+  if (!Array.isArray(tuple)) {
+    const name = String(tuple?.name || "").trim();
+    return {
+      series_id: tuple?.series_id,
+      norm_name: tuple?.norm_name || cleanIptvTitle(name),
+      name,
+      releaseDate: tuple?.releaseDate || tuple?.release_date || null,
+      year: yearFrom(tuple?.releaseDate || tuple?.release_date),
+      category_id: tuple?.category_id ?? null,
+      tmdb_id: tuple?.tmdb_id || null,
+      cover: tuple?.cover || null,
+    };
+  }
+
+  return {
+    series_id: tuple[0],
+    norm_name: tuple[1] || cleanIptvTitle(tuple[2] || ""),
+    name: tuple[2] || "Unknown",
+    year: tuple[3] || null,
+    releaseDate: tuple[3] || null,
+    category_id: tuple[4] ?? null,
+    cover: tuple[5] || null,
+    tmdb_id: tuple[6] || null,
+  };
+}
+
+function liveToTuple(stream) {
+  const name = String(stream.name || "").trim();
+  return [
+    Number(stream.stream_id),
+    cleanIptvTitle(name),
+    name,
+    stream.stream_icon || null,
+    stream.category_id ?? null,
+  ];
+}
+
+function liveFromTuple(tuple) {
+  if (!Array.isArray(tuple)) {
+    const name = String(tuple?.name || "").trim();
+    return {
+      stream_id: tuple?.stream_id,
+      norm_name: tuple?.norm_name || cleanIptvTitle(name),
+      name,
+      stream_icon: tuple?.stream_icon || null,
+      category_id: tuple?.category_id ?? null,
+    };
+  }
+
+  return {
+    stream_id: tuple[0],
+    norm_name: tuple[1] || cleanIptvTitle(tuple[2] || ""),
+    name: tuple[2] || "Unknown",
+    stream_icon: tuple[3] || null,
+    category_id: tuple[4] ?? null,
+  };
+}
+
+function filterByCategory(items, categoryId) {
+  return categoryId ? items.filter(item => item.category_id == categoryId) : items;
+}
 
 class XtreamClient {
   constructor(serverUrl, username, password) {
-    this.base     = serverUrl.replace(/\/$/, "");
+    this.base = serverUrl.replace(/\/$/, "");
     this.username = username;
     this.password = password;
-    this.ph       = providerHash(serverUrl);
+    this.ph = providerHash(serverUrl);
   }
 
   _apiUrl(action, extra = "") {
     return `${this.base}/player_api.php?username=${this.username}&password=${this.password}&action=${action}${extra}`;
   }
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
-
   async authenticate() {
     const url = `${this.base}/player_api.php?username=${this.username}&password=${this.password}`;
     return fetchWithRetry(url);
   }
-
-  // ── Categories ────────────────────────────────────────────────────────────
 
   async getCategories() {
     const cached = await cache.getCategories(this.ph);
@@ -70,45 +185,28 @@ class XtreamClient {
     return result;
   }
 
-  // ── Live TV ───────────────────────────────────────────────────────────────
-
   async getLiveStreams(categoryId = null) {
     const cached = await cache.getCatalogLive(this.ph);
-    if (cached) return categoryId ? cached.filter(s => s.category_id == categoryId) : cached;
+    if (cached) return filterByCategory(cached.map(liveFromTuple), categoryId);
 
     const raw = await fetchWithRetry(this._apiUrl("get_live_streams"));
-    const streams = raw.map(s => ({
-      stream_id:   s.stream_id,
-      name:        s.name,
-      stream_icon: s.stream_icon || null,
-      category_id: s.category_id,
-    }));
-    await cache.setCatalogLive(this.ph, streams);
-    return categoryId ? streams.filter(s => s.category_id == categoryId) : streams;
+    const tuples = (raw || []).map(liveToTuple).filter(row => row[0]);
+    await cache.setCatalogLive(this.ph, tuples);
+    return filterByCategory(tuples.map(liveFromTuple), categoryId);
   }
 
   getLiveStreamUrl(streamId, ext = "m3u8") {
     return `${this.base}/live/${this.username}/${this.password}/${streamId}.${ext}`;
   }
 
-  // ── Movies ────────────────────────────────────────────────────────────────
-
   async getMovies(categoryId = null) {
     const cached = await cache.getCatalogMovies(this.ph);
-    if (cached) return categoryId ? cached.filter(m => m.category_id == categoryId) : cached;
+    if (cached) return filterByCategory(cached.map(movieFromTuple), categoryId);
 
     const raw = await fetchWithRetry(this._apiUrl("get_vod_streams"));
-    const movies = raw.map(m => ({
-      stream_id:           m.stream_id,
-      name:                m.name,
-      year:                m.year || null,
-      container_extension: m.container_extension || "mp4",
-      category_id:         m.category_id,
-      tmdb_id:             m.tmdb_id || null,
-      stream_icon:         m.stream_icon || null,
-    }));
-    await cache.setCatalogMovies(this.ph, movies);
-    return categoryId ? movies.filter(m => m.category_id == categoryId) : movies;
+    const tuples = (raw || []).map(movieToTuple).filter(row => row[0]);
+    await cache.setCatalogMovies(this.ph, tuples);
+    return filterByCategory(tuples.map(movieFromTuple), categoryId);
   }
 
   async getMovieInfo(vodId) {
@@ -124,23 +222,14 @@ class XtreamClient {
     return `${this.base}/movie/${this.username}/${this.password}/${streamId}.${ext}`;
   }
 
-  // ── Series ────────────────────────────────────────────────────────────────
-
   async getSeries(categoryId = null) {
     const cached = await cache.getCatalogSeries(this.ph);
-    if (cached) return categoryId ? cached.filter(s => s.category_id == categoryId) : cached;
+    if (cached) return filterByCategory(cached.map(seriesFromTuple), categoryId);
 
     const raw = await fetchWithRetry(this._apiUrl("get_series"));
-    const series = raw.map(s => ({
-      series_id:   s.series_id,
-      name:        s.name,
-      releaseDate: s.releaseDate || s.release_date || null,
-      category_id: s.category_id,
-      tmdb_id:     s.tmdb_id || null,
-      cover:       s.cover || null,
-    }));
-    await cache.setCatalogSeries(this.ph, series);
-    return categoryId ? series.filter(s => s.category_id == categoryId) : series;
+    const tuples = (raw || []).map(seriesToTuple).filter(row => row[0]);
+    await cache.setCatalogSeries(this.ph, tuples);
+    return filterByCategory(tuples.map(seriesFromTuple), categoryId);
   }
 
   async getSeriesInfo(seriesId) {
