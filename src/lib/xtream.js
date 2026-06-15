@@ -11,13 +11,21 @@ const { cleanIptvTitle } = require("./normalize");
 
 const FETCH_TIMEOUT_MS = 20000;
 
+const PROVIDER_HEADERS = {
+  "User-Agent": process.env.PROVIDER_USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
+  "Accept": "application/json,text/plain,*/*",
+};
+
 async function fetchWithRetry(url, retries = 3, delayMs = 500) {
   for (let attempt = 1; attempt <= retries; attempt++) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
     try {
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(url, {
+        signal: controller.signal,
+        headers: PROVIDER_HEADERS,
+      });
       clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
