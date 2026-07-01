@@ -11,6 +11,34 @@ const { cleanIptvTitle } = require("./normalize");
 
 const FETCH_TIMEOUT_MS = 20000;
 
+/**
+ * Module-scoped "hot" cache — an L1 layer in front of Redis.
+ * Survives between invocations only while the Netlify Function container
+ * stays warm (typically a few minutes of reuse); cold starts reset it
+ * to an empty Map, so this is purely an optimization, never a source
+ * of truth. Short TTL is intentional: there's no point matching Redis's
+ * 30-min TTL here since a cold start invalidates this long before that.
+ */
+const hot = new Map(); // key -> { value, expiresAt }
+// 24h default: catalog is extremely static, so the real ceiling on how long
+// this lives isn't the TTL — it's the Netlify container's own lifecycle
+// (idle recycling, redeploys). A long TTL here just means "never expire by
+// time," letting container recycling be the only thing that resets it.
+const HOT_TTL_MS = Number(process.env.HOT_CACHE_TTL_MS) || 24 * 60 * 60 * 1000;
+
+function hotGet(key) {
+  const entry = hot.get(key);
+  if (!entry || entry.expiresAt < Date.now()) {
+    if (entry) hot.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function hotSet(key, value) {
+  hot.set(key, { value, expiresAt: Date.now() + HOT_TTL_MS });
+}
+
 const PROVIDER_HEADERS = {
   "User-Agent": process.env.PROVIDER_USER_AGENT || "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
   "Accept": "application/json,text/plain,*/*",
@@ -179,8 +207,12 @@ class XtreamClient {
   }
 
   async getCategories() {
+    const hotKey = `categories:${this.ph}`;
+    const hotHit = hotGet(hotKey);
+    if (hotHit) return hotHit;
+
     const cached = await cache.getCategories(this.ph);
-    if (cached) return cached;
+    if (cached) { hotSet(hotKey, cached); return cached; }
 
     const [live, movies, series] = await Promise.all([
       fetchWithRetry(this._apiUrl("get_live_categories")),
@@ -190,16 +222,22 @@ class XtreamClient {
 
     const result = { live, movies, series };
     await cache.setCategories(this.ph, result);
+    hotSet(hotKey, result);
     return result;
   }
 
   async getLiveStreams(categoryId = null) {
+    const hotKey = `live:${this.ph}`;
+    const hotHit = hotGet(hotKey);
+    if (hotHit) return filterByCategory(hotHit.map(liveFromTuple), categoryId);
+
     const cached = await cache.getCatalogLive(this.ph);
-    if (cached) return filterByCategory(cached.map(liveFromTuple), categoryId);
+    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(liveFromTuple), categoryId); }
 
     const raw = await fetchWithRetry(this._apiUrl("get_live_streams"));
     const tuples = (raw || []).map(liveToTuple).filter(row => row[0]);
     await cache.setCatalogLive(this.ph, tuples);
+    hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(liveFromTuple), categoryId);
   }
 
@@ -208,12 +246,17 @@ class XtreamClient {
   }
 
   async getMovies(categoryId = null) {
+    const hotKey = `movies:${this.ph}`;
+    const hotHit = hotGet(hotKey);
+    if (hotHit) return filterByCategory(hotHit.map(movieFromTuple), categoryId);
+
     const cached = await cache.getCatalogMovies(this.ph);
-    if (cached) return filterByCategory(cached.map(movieFromTuple), categoryId);
+    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(movieFromTuple), categoryId); }
 
     const raw = await fetchWithRetry(this._apiUrl("get_vod_streams"));
     const tuples = (raw || []).map(movieToTuple).filter(row => row[0]);
     await cache.setCatalogMovies(this.ph, tuples);
+    hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(movieFromTuple), categoryId);
   }
 
@@ -231,12 +274,17 @@ class XtreamClient {
   }
 
   async getSeries(categoryId = null) {
+    const hotKey = `series:${this.ph}`;
+    const hotHit = hotGet(hotKey);
+    if (hotHit) return filterByCategory(hotHit.map(seriesFromTuple), categoryId);
+
     const cached = await cache.getCatalogSeries(this.ph);
-    if (cached) return filterByCategory(cached.map(seriesFromTuple), categoryId);
+    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(seriesFromTuple), categoryId); }
 
     const raw = await fetchWithRetry(this._apiUrl("get_series"));
     const tuples = (raw || []).map(seriesToTuple).filter(row => row[0]);
     await cache.setCatalogSeries(this.ph, tuples);
+    hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(seriesFromTuple), categoryId);
   }
 
