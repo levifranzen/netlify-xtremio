@@ -1,38 +1,12 @@
 [build]
-  publish = "public"
+  command = "npm run build"
   functions = "netlify/functions"
 
 [functions]
   node_bundler = "esbuild"
-  included_files = ["src/**"]
 
-[functions."addon"]
-  timeout = 26
-
-[functions."configure"]
-  timeout = 26
-
-[functions."admin"]
-  timeout = 26
-
-# ── Redirects ─────────────────────────────────────────────────────────────────
-
-# Static pages
+# Uma única function roteia tudo, mantendo o addon simples.
 [[redirects]]
-  from = "/"
-  to   = "/configure.html"
+  from = "/*"
+  to = "/.netlify/functions/addon/:splat"
   status = 200
-
-[[redirects]]
-  from = "/admin"
-  to   = "/admin.html"
-  status = 200
-
-# ── Headers ───────────────────────────────────────────────────────────────────
-
-[[headers]]
-  for = "/.netlify/functions/*"
-  [headers.values]
-    Access-Control-Allow-Origin  = "*"
-    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers = "Content-Type, x-admin-secret"
