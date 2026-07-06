@@ -58,7 +58,7 @@ function movieMatchEntriesFromMatches(matches) {
   return [...new Map(
     (matches || [])
       .filter(item => item?.stream_id)
-      .map(item => [String(item.stream_id), [Number(item.stream_id), String(item.container_extension || "mp4").toLowerCase()]])
+      .map(item => [String(item.stream_id), [Number(item.stream_id), String(item.container_extension || "mp4").toLowerCase(), item.name || null]])
   ).values()];
 }
 
@@ -66,7 +66,7 @@ function seriesMatchEntriesFromMatches(matches) {
   return [...new Map(
     (matches || [])
       .filter(item => item?.series_id)
-      .map(item => [String(item.series_id), [Number(item.series_id)]])
+      .map(item => [String(item.series_id), [Number(item.series_id), item.name || null]])
   ).values()];
 }
 

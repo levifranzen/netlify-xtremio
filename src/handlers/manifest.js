@@ -12,13 +12,14 @@ function handleManifest(event, payload) {
     name,
     description: `${name} via Xtream Codes, powered by Xtremio SaaS`,
     logo: `${host}/logo.png`,
-    resources: ["catalog", "meta", "stream"],
+    resources: [
+      { name: "catalog", types: ["tv"] },
+      { name: "stream", types: ["movie", "series", "tv"], idPrefixes: ["tt", "xtream:"] },
+    ],
     types: ["movie", "series", "tv"],
     idPrefixes: ["tt", "xtream:"],
     catalogs: [
-      { type: "movie",  id: "xtremio_movies", name: `${name} Movies`,  extra: [{ name: "genre" }, { name: "search" }] },
-      { type: "series", id: "xtremio_series", name: `${name} Series`,  extra: [{ name: "genre" }, { name: "search" }] },
-      { type: "tv",     id: "xtremio_live",   name: `${name} Live TV`, extra: [{ name: "genre" }] },
+      { type: "tv", id: "xtremio_live", name: `${name} Live TV`, extra: [{ name: "genre" }, { name: "search" }] },
     ],
     behaviorHints: { adult: false, p2p: false },
   };

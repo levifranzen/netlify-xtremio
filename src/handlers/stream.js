@@ -2,7 +2,6 @@ const { json } = require("../lib/http");
 const { cache } = require("../lib/cache");
 const { providerDisplayName, liveFormat, tmdbLanguage } = require("../lib/provider-config");
 const { getMovieByImdbId, getSeriesByImdbId, getMatchNames, movieYear, seriesYear } = require("../lib/tmdb");
-const { findLiveGroupById } = require("../services/live-grouping");
 const { findAllMatches, movieMatchEntriesFromMatches, seriesMatchEntriesFromMatches } = require("../services/provider-match");
 const { movieStreamsFromEntries, seriesStreamsFromEntries } = require("../services/stream-builders");
 
@@ -92,32 +91,7 @@ async function handleImdbMovieStream({ id, xtream, keyHash, ph, providerName, se
 }
 
 async function handleXtreamStream({ id, xtream, keyHash, providerName, selectedLiveFormat }) {
-  const [, itemType, itemId, itemExt] = id.split(":");
-
-  if (itemType === "movie") {
-    const ext = itemExt || "mp4";
-    cache.incrStat(keyHash, "streams_movie").catch(() => {});
-    return [{ name: `${providerName} | ${ext.toUpperCase()}`, url: xtream.getMovieStreamUrl(itemId, ext) }];
-  }
-
-  if (itemType === "ep") {
-    const ext = itemExt || "mp4";
-    cache.incrStat(keyHash, "streams_series").catch(() => {});
-    return [{ name: `${providerName} | ${ext.toUpperCase()}`, url: xtream.getEpisodeStreamUrl(itemId, ext) }];
-  }
-
-  if (itemType === "ai") {
-    const liveStreams = await xtream.getLiveStreams();
-    const group = findLiveGroupById(liveStreams, itemId);
-
-    cache.incrStat(keyHash, "streams_live").catch(() => {});
-
-    if (!group) return [];
-    return group.list.map(channel => ({
-      name: `${providerName} | ${channel.name}`,
-      url: xtream.getLiveStreamUrl(channel.stream_id, selectedLiveFormat),
-    }));
-  }
+  const [, itemType, itemId] = id.split(":");
 
   if (itemType === "live") {
     cache.incrStat(keyHash, "streams_live").catch(() => {});
