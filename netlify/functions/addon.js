@@ -25,7 +25,7 @@ exports.handler = async (event) => {
   if (!auth) return json(401, { error: "Invalid token or revoked key" });
 
   switch (resource) {
-    case "manifest": return handleManifest(event, auth.payload);
+    case "manifest": return handleManifest(event, auth);
     case "catalog":  return handleCatalog(event, auth);
     case "meta":     return handleMeta(event, auth);
     case "stream":   return handleStream(event, auth);
