@@ -1,5 +1,4 @@
-node_modules
-.netlify
+node_modules/
+.netlify/
 .env
-.DS_Store
-/tmp
+*.local
