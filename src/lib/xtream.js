@@ -260,15 +260,6 @@ class XtreamClient {
     return filterByCategory(tuples.map(movieFromTuple), categoryId);
   }
 
-  async getMovieInfo(vodId) {
-    const cached = await cache.getSeriesInfo(this.ph, `movie:${vodId}`);
-    if (cached) return cached;
-
-    const info = await fetchWithRetry(this._apiUrl("get_vod_info", `&vod_id=${vodId}`));
-    await cache.setSeriesInfo(this.ph, `movie:${vodId}`, info);
-    return info;
-  }
-
   getMovieStreamUrl(streamId, ext = "mp4") {
     return `${this.base}/movie/${this.username}/${this.password}/${streamId}.${ext}`;
   }
@@ -292,9 +283,14 @@ class XtreamClient {
     const cached = await cache.getSeriesInfo(this.ph, seriesId);
     if (cached) return cached;
 
+    // Only `episodes` is consumed downstream (stream-builders looks up season/episode
+    // to resolve the playback URL) — the rest of the payload (plot, cast, cover,
+    // backdrop) used to feed the series meta page, which no longer exists, so we
+    // don't pay to cache it.
     const info = await fetchWithRetry(this._apiUrl("get_series_info", `&series_id=${seriesId}`), 3, 800);
-    await cache.setSeriesInfo(this.ph, seriesId, info);
-    return info;
+    const trimmed = { episodes: info?.episodes || {} };
+    await cache.setSeriesInfo(this.ph, seriesId, trimmed);
+    return trimmed;
   }
 
   getEpisodeStreamUrl(streamId, ext = "mkv") {

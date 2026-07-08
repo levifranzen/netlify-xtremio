@@ -8,7 +8,7 @@
  *   catalog:{providerHash}:live             TTL 30 min   compact provider live catalog
  *   match:{providerHash}:{tmdbId}           TTL 30 days  TMDB -> provider IDs
  *   tmdb:{language}:{imdbId}                TTL 30 days  TMDB /find result, language-scoped
- *   provider:{providerHash}:series:{id}     TTL 30 days  provider detail cache, kept for now
+ *   provider:{providerHash}:series:{id}     TTL 30 days  series episodes-only detail cache
  *   apikey:{hashedKey}                      no TTL       admin managed
  *   apikey:{hashedKey}:stats                no TTL       counters
  *   blocked:provider:{providerHash}         no TTL       admin managed
@@ -131,7 +131,7 @@ const cache = {
   async getCatalogLive(ph) { return get(keys.catalogLive(ph)); },
   async setCatalogLive(ph, value) { return set(keys.catalogLive(ph), value, TTL.CATALOG); },
 
-  // Detail cache kept out of the match model.
+  // Series episodes-only detail cache (trimmed at the xtream.js layer before caching).
   async getSeriesInfo(ph, id) { return get(keys.seriesInfo(ph, id)); },
   async setSeriesInfo(ph, id, value) { return set(keys.seriesInfo(ph, id), value, TTL.LONG); },
 
