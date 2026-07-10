@@ -1,14 +1,15 @@
 /**
  * cache.js — Upstash Redis via REST API (POST pipeline)
  *
+ * Provider catalog (categories/live/movies/series) is NOT cached here anymore —
+ * it lives only in the in-memory "hot" layer inside xtream.js. Redis is reserved
+ * for the two things worth persisting across cold starts: TMDB lookups and the
+ * TMDB -> provider-id match results (both expensive to recompute, both safe to
+ * serve slightly stale).
+ *
  * Cache key schema:
- *   catalog:{providerHash}:categories       TTL 30 days
- *   catalog:{providerHash}:movies           TTL 30 min   compact provider movie catalog
- *   catalog:{providerHash}:series           TTL 30 min   compact provider series catalog
- *   catalog:{providerHash}:live             TTL 30 min   compact provider live catalog
  *   match:{providerHash}:{tmdbId}           TTL 30 days  TMDB -> provider IDs
  *   tmdb:{language}:{imdbId}                TTL 30 days  TMDB /find result, language-scoped
- *   provider:{providerHash}:series:{id}     TTL 30 days  series episodes-only detail cache
  *   apikey:{hashedKey}                      no TTL       admin managed
  *   apikey:{hashedKey}:stats                no TTL       counters
  *   blocked:provider:{providerHash}         no TTL       admin managed
@@ -18,7 +19,6 @@ const UPSTASH_URL = process.env.UPSTASH_REDIS_REST_URL;
 const UPSTASH_TOKEN = process.env.UPSTASH_REDIS_REST_TOKEN;
 
 const TTL = {
-  CATALOG: 60 * 30,           // 30 min — provider catalogs change often
   LONG: 60 * 60 * 24 * 30,    // 30 days
 };
 
@@ -75,15 +75,8 @@ async function exists(key) {
 }
 
 const keys = {
-  categories: (ph) => `catalog:${ph}:categories`,
-  catalogMovies: (ph) => `catalog:${ph}:movies`,
-  catalogSeries: (ph) => `catalog:${ph}:series`,
-  catalogLive: (ph) => `catalog:${ph}:live`,
   providerMatch: (ph, tmdbId) => `match:${ph}:${tmdbId}`,
   tmdb: (lang, imdbId) => `tmdb:${lang}:${imdbId}`,
-
-  // Detail cache kept intentionally for now; it is not part of the match contract.
-  seriesInfo: (ph, id) => `provider:${ph}:series:${id}`,
 
   apiKey: (hash) => `apikey:${hash}`,
   apiKeyStats: (hash) => `apikey:${hash}:stats`,
@@ -120,20 +113,6 @@ const cache = {
   get,
   set,
   del,
-
-  // Provider catalog — short TTL, compact tuple values.
-  async getCategories(ph) { return get(keys.categories(ph)); },
-  async setCategories(ph, value) { return set(keys.categories(ph), value, TTL.LONG); },
-  async getCatalogMovies(ph) { return get(keys.catalogMovies(ph)); },
-  async setCatalogMovies(ph, value) { return set(keys.catalogMovies(ph), value, TTL.CATALOG); },
-  async getCatalogSeries(ph) { return get(keys.catalogSeries(ph)); },
-  async setCatalogSeries(ph, value) { return set(keys.catalogSeries(ph), value, TTL.CATALOG); },
-  async getCatalogLive(ph) { return get(keys.catalogLive(ph)); },
-  async setCatalogLive(ph, value) { return set(keys.catalogLive(ph), value, TTL.CATALOG); },
-
-  // Series episodes-only detail cache (trimmed at the xtream.js layer before caching).
-  async getSeriesInfo(ph, id) { return get(keys.seriesInfo(ph, id)); },
-  async setSeriesInfo(ph, id, value) { return set(keys.seriesInfo(ph, id), value, TTL.LONG); },
 
   // TMDB metadata, language-scoped and type-aware inside the value.
   async getTmdb(imdbId, lang = "pt-BR") { return get(keys.tmdb(lang, imdbId)); },

@@ -1,11 +1,14 @@
 /**
  * xtream.js — Xtream Codes API client
  *
- * Provider catalogs are cached in compact tuple form to keep Redis payloads small,
- * while public methods return readable objects for handlers.
+ * Catalog data (live/movies/series/categories) is cached only in the
+ * module-scoped "hot" L1 map below — no Redis involved. This is a deliberate
+ * tradeoff: it's simpler and Redis is reserved for provider-match (the
+ * expensive-to-compute part), at the cost of every cold Netlify Function
+ * container re-fetching the full catalog from the provider on its first
+ * request.
  */
 
-const { cache } = require("./cache");
 const { providerHash } = require("./token");
 const { cleanIptvTitle } = require("./normalize");
 
@@ -211,9 +214,6 @@ class XtreamClient {
     const hotHit = hotGet(hotKey);
     if (hotHit) return hotHit;
 
-    const cached = await cache.getCategories(this.ph);
-    if (cached) { hotSet(hotKey, cached); return cached; }
-
     const [live, movies, series] = await Promise.all([
       fetchWithRetry(this._apiUrl("get_live_categories")),
       fetchWithRetry(this._apiUrl("get_vod_categories")),
@@ -221,7 +221,6 @@ class XtreamClient {
     ]);
 
     const result = { live, movies, series };
-    await cache.setCategories(this.ph, result);
     hotSet(hotKey, result);
     return result;
   }
@@ -231,12 +230,8 @@ class XtreamClient {
     const hotHit = hotGet(hotKey);
     if (hotHit) return filterByCategory(hotHit.map(liveFromTuple), categoryId);
 
-    const cached = await cache.getCatalogLive(this.ph);
-    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(liveFromTuple), categoryId); }
-
     const raw = await fetchWithRetry(this._apiUrl("get_live_streams"));
     const tuples = (raw || []).map(liveToTuple).filter(row => row[0]);
-    await cache.setCatalogLive(this.ph, tuples);
     hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(liveFromTuple), categoryId);
   }
@@ -250,12 +245,8 @@ class XtreamClient {
     const hotHit = hotGet(hotKey);
     if (hotHit) return filterByCategory(hotHit.map(movieFromTuple), categoryId);
 
-    const cached = await cache.getCatalogMovies(this.ph);
-    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(movieFromTuple), categoryId); }
-
     const raw = await fetchWithRetry(this._apiUrl("get_vod_streams"));
     const tuples = (raw || []).map(movieToTuple).filter(row => row[0]);
-    await cache.setCatalogMovies(this.ph, tuples);
     hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(movieFromTuple), categoryId);
   }
@@ -269,28 +260,19 @@ class XtreamClient {
     const hotHit = hotGet(hotKey);
     if (hotHit) return filterByCategory(hotHit.map(seriesFromTuple), categoryId);
 
-    const cached = await cache.getCatalogSeries(this.ph);
-    if (cached) { hotSet(hotKey, cached); return filterByCategory(cached.map(seriesFromTuple), categoryId); }
-
     const raw = await fetchWithRetry(this._apiUrl("get_series"));
     const tuples = (raw || []).map(seriesToTuple).filter(row => row[0]);
-    await cache.setCatalogSeries(this.ph, tuples);
     hotSet(hotKey, tuples);
     return filterByCategory(tuples.map(seriesFromTuple), categoryId);
   }
 
   async getSeriesInfo(seriesId) {
-    const cached = await cache.getSeriesInfo(this.ph, seriesId);
-    if (cached) return cached;
-
-    // Only `episodes` is consumed downstream (stream-builders looks up season/episode
-    // to resolve the playback URL) — the rest of the payload (plot, cast, cover,
-    // backdrop) used to feed the series meta page, which no longer exists, so we
-    // don't pay to cache it.
+    // No caching here, on purpose: this is the data that resolves an episode's
+    // actual stream_id. Serving a stale copy risks handing back a stream_id
+    // the provider no longer recognizes, and there's no way to know it's stale
+    // without asking the provider anyway — so we always ask the provider.
     const info = await fetchWithRetry(this._apiUrl("get_series_info", `&series_id=${seriesId}`), 3, 800);
-    const trimmed = { episodes: info?.episodes || {} };
-    await cache.setSeriesInfo(this.ph, seriesId, trimmed);
-    return trimmed;
+    return { episodes: info?.episodes || {} };
   }
 
   getEpisodeStreamUrl(streamId, ext = "mkv") {
